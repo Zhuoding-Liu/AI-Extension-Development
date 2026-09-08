@@ -17,7 +17,7 @@ PageFlow AI is a Chrome and Edge extension that helps users improve webpage appe
 
 ## 3. Current baseline
 
-The current `1.2.0` development version provides:
+The current `1.3.0` development version provides:
 
 - Original, Warm, and Contrast themes
 - image hiding and grayscale images
@@ -27,8 +27,11 @@ The current `1.2.0` development version provides:
 - per-origin settings stored with `chrome.storage.local`
 - English local natural-language shortcuts
 - optional direct access to OpenAI-compatible and Anthropic Claude APIs
-- filtered page-context summaries for structure-aware AI customization
-- safe semantic-region layout controls
+- filtered page models with semantic regions and redacted section summaries
+- safe semantic-region controls plus Reading, Cards, and Workspace layouts
+- custom colors, typography, alignment, spacing, and corner radius
+- trusted Table of Contents, Reading Progress, Back to Top, and heading-highlight features
+- AI proposal review with Apply, Dismiss, and session Undo
 
 Current AI request flow:
 
@@ -37,9 +40,11 @@ Popup prompt
     -> popup.js
     -> service-worker.js
     -> configured OpenAI-compatible or Claude endpoint
-    -> JSON settings
+    -> JSON design proposal
     -> content-script.js validation
-    -> webpage styles
+    -> popup review
+    -> content-script.js validation
+    -> webpage styles and trusted built-in features
 ```
 
 When no API endpoint is configured, the prompt field uses local keyword rules instead of GenAI.
@@ -77,10 +82,9 @@ When no API endpoint is configured, the prompt field uses local keyword rules in
 
 - Server-side AI proxy
 - Multi-turn conversation
-- Apply, Dismiss, and Undo controls
-- Safe page-context summary
-- Custom colors and typography settings
+- Explicit page-summary sharing controls
 - Request limits and abuse protection
+- Additional reviewed built-in feature modules
 
 ### Out of scope until reviewed
 
@@ -135,6 +139,13 @@ The extension uses a typed state object instead of arbitrary code.
 | `saturation` | number | 0–200 |
 | `brightness` | number | 60–140 |
 | `readingWidth` | number | 0 or 480–1200 |
+| `layoutPreset` | string | `original`, `reading`, `cards`, `workspace` |
+| `customBackground`, `customText`, `customAccent` | string | empty or six-digit hex color |
+| `fontStyle` | string | `original`, `sans`, `serif`, `mono` |
+| `textAlign` | string | `original`, `left`, `center`, `justify` |
+| `sectionGap` | number | 0–48 |
+| `cornerRadius` | number | 0–32 |
+| Trusted built-in feature flags | boolean | Table of Contents, Reading Progress, Back to Top, heading highlights |
 
 Future settings must be added to the default state, server schema, content-script sanitizer, CSS application layer, reset behavior, and tests.
 
@@ -194,6 +205,9 @@ Status: Current
 - [x] Parse JSON settings returned by the model.
 - [x] Add a filtered page-context summary.
 - [x] Add allowlisted semantic-region layout settings.
+- [x] Add redacted section summaries and page-type inference.
+- [x] Add proposal Review, Apply, Dismiss, and Undo.
+- [x] Add declarative layouts, custom colors, typography, spacing, and trusted feature flags.
 - [ ] Add clearer connection diagnostics.
 - [ ] Test malformed and partial AI responses.
 
@@ -205,19 +219,21 @@ Status: Planned
 - [ ] Replace free-form JSON parsing with a strict output schema.
 - [ ] Add explicit user controls for page-summary sharing.
 - [ ] Add multi-turn conversation history.
-- [ ] Add Apply, Dismiss, and Undo actions.
+- [x] Add Apply, Dismiss, and Undo actions.
 - [ ] Add backend authentication and rate limiting.
 
 ### Phase 4 — Advanced customization
 
 Status: Planned
 
-- [ ] Add custom background, text, and accent colors.
-- [ ] Add font-style and text-alignment controls.
-- [ ] Add paragraph and letter spacing.
-- [ ] Add control corner-radius settings.
+- [x] Add custom background, text, and accent colors.
+- [x] Add font-style and text-alignment controls.
+- [x] Add section spacing.
+- [x] Add corner-radius settings.
+- [x] Add safe Reading, Cards, and Workspace presets.
+- [x] Add trusted navigation and reading feature modules.
 - [ ] Add video visibility.
-- [ ] Evaluate safe Reading, Study, and Low Vision presets.
+- [ ] Evaluate Study and Low Vision presets.
 - [ ] Add localized natural-language support.
 
 ### Phase 5 — Release readiness

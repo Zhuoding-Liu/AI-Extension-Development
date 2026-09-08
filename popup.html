@@ -23,10 +23,20 @@
           <span class="local-pill" id="aiMode">Local rules</span>
         </div>
         <div class="prompt-row">
-          <textarea id="aiPrompt" rows="2" placeholder="For example: larger text, hide images, use warm colors"></textarea>
+          <textarea id="aiPrompt" rows="2" placeholder="For example: create a calm reading layout with a contents panel"></textarea>
           <button id="applyPrompt" class="send-button" aria-label="Apply smart settings">→</button>
         </div>
-        <p class="hint" id="promptHint">When AI is connected, requests include a filtered page summary. Quick controls remain local.</p>
+        <p class="hint" id="promptHint">AI receives a filtered page model and proposes only trusted design settings and built-in features.</p>
+        <div id="aiPlan" class="ai-plan" hidden>
+          <strong>Proposed design</strong>
+          <p id="aiPlanSummary"></p>
+          <ul id="aiPlanChanges"></ul>
+          <div class="ai-plan-actions">
+            <button id="dismissAi" type="button">Dismiss</button>
+            <button id="applyAi" type="button">Apply changes</button>
+          </div>
+        </div>
+        <button id="undoAi" class="undo-ai" type="button" hidden>Undo last AI change</button>
       </section>
 
       <section aria-labelledby="themeTitle">

@@ -2,7 +2,7 @@
 
 PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.2.0`
+Version: `1.3.0`
 
 ## Features
 
@@ -15,7 +15,11 @@ Version: `1.2.0`
 - One-click website reset
 - English natural-language shortcuts that work without an API
 - Page-aware GenAI customization through OpenAI-compatible or Anthropic Claude APIs
-- Filtered DOM summaries containing semantic regions, headings, a limited visible-text excerpt, and basic appearance
+- Filtered page models containing semantic regions, section summaries, headings, limited visible text, and basic appearance
+- AI-selectable Reading, Cards, and Workspace layout presets
+- AI-selectable custom background, text, and accent colors, font style, alignment, spacing, and corner radius
+- Trusted built-in Table of Contents, Reading Progress, Back to Top, and heading-highlight features
+- Review, Apply, Dismiss, and Undo controls for AI proposals
 
 The Dark theme is not included in this version.
 
@@ -97,7 +101,7 @@ For example:
 Increase the text size, improve line spacing, and hide images.
 ```
 
-If the request succeeds, the popup displays **Claude connected** for Anthropic or **AI connected** for an OpenAI-compatible provider, then applies the returned settings immediately.
+If the request succeeds, the popup displays **Claude connected** for Anthropic or **AI connected** for an OpenAI-compatible provider and shows a sanitized proposal. Review the summary and settings, then choose **Apply changes** or **Dismiss**. After applying a proposal, **Undo last AI change** restores the previous state.
 
 The current version is a page-customization command interface rather than a general-purpose chatbot. It does not maintain multi-turn conversation history.
 
@@ -127,14 +131,27 @@ The GenAI service can return only the following page settings:
 | `footerMode` | string | `original`, `hide` |
 | `paragraphSpacing` | number | 0–40 |
 | `pagePadding` | number | 0–48 |
+| `layoutPreset` | string | `original`, `reading`, `cards`, `workspace` |
+| `customBackground` | string | empty or six-digit hex color |
+| `customText` | string | empty or six-digit hex color |
+| `customAccent` | string | empty or six-digit hex color |
+| `fontStyle` | string | `original`, `sans`, `serif`, `mono` |
+| `textAlign` | string | `original`, `left`, `center`, `justify` |
+| `sectionGap` | number | 0–48 |
+| `cornerRadius` | number | 0–32 |
+| `tableOfContents` | boolean | trusted built-in feature |
+| `readingProgress` | boolean | trusted built-in feature |
+| `backToTop` | boolean | trusted built-in feature |
+| `highlightHeadings` | boolean | `true` or `false` |
 
-AI output is validated again by `content-script.js` before being applied.
+AI output is sanitized by `content-script.js` before it is displayed for review and again when it is applied.
 
 This version cannot use GenAI to:
 
-- rearrange arbitrary webpage elements
+- move individual arbitrary DOM nodes or rewrite page content
 - generate or execute JavaScript
 - inject arbitrary HTML or CSS
+- invent a new executable feature that is not implemented as a trusted built-in
 - submit forms or perform account actions
 - access browser-internal pages
 
@@ -146,22 +163,29 @@ Prompt field
     -> content-script.js analyzes the rendered page
     -> service-worker.js
     -> configured OpenAI-compatible or Claude endpoint
-    -> JSON settings
+    -> JSON design proposal
     -> content-script.js validation
-    -> webpage styles
+    -> popup review (Apply or Dismiss)
+    -> content-script.js validation
+    -> webpage styles and trusted built-in features
 ```
 
-The extension sends the user's request, current PageFlow settings, hostname/path without query parameters, semantic-region statistics, headings, a redacted visible-text excerpt, and basic computed appearance. It never sends complete page HTML, form values, cookies, local storage, query strings, or URL fragments.
+The extension sends the user's request, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, a limited visible-text excerpt, and basic computed appearance. Context is capped before it is sent. It never sends complete page HTML, form values, cookies, local storage, query strings, or URL fragments.
 
 The model is instructed to return a JSON object. A typical response looks like:
 
 ```json
 {
-  "theme": "warm",
-  "fontScale": 120,
-  "lineHeight": 1.8,
-  "hideImages": true,
-  "reduceMotion": true
+  "summary": "A focused reading layout with gentle colors and navigation aids.",
+  "settings": {
+    "layoutPreset": "reading",
+    "customBackground": "#fffaf0",
+    "customText": "#2f2a24",
+    "customAccent": "#7556b8",
+    "fontScale": 115,
+    "tableOfContents": true,
+    "readingProgress": true
+  }
 }
 ```
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PageFlow AI",
-  "version": "1.2.0",
-  "description": "Adjust webpage colors, images, typography, spacing, and accessibility with page-aware OpenAI-compatible and Anthropic Claude customization.",
+  "version": "1.3.0",
+  "description": "Create reviewable, page-aware layouts, colors, accessibility changes, and trusted built-in features with Claude or OpenAI-compatible AI.",
   "permissions": ["storage", "activeTab"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {

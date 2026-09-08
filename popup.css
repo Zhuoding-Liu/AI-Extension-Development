@@ -68,6 +68,15 @@ textarea::placeholder { color: #6f727e; }
 .send-button:hover { filter: brightness(1.08); }
 .send-button:disabled { opacity: .5; cursor: wait; }
 .hint { margin: 7px 1px 0; color: #807f8a; font-size: 9px; }
+.ai-plan { margin-top: 10px; padding: 10px; border: 1px solid #5a4c85; border-radius: 10px; background: rgba(18, 19, 25, .72); }
+.ai-plan > strong { color: #c9bbff; font-size: 10px; }
+.ai-plan p { margin: 5px 0 7px; color: #d7d5df; font-size: 10px; line-height: 1.4; }
+.ai-plan ul { max-height: 96px; overflow: auto; margin: 0 0 9px; padding-left: 17px; color: #a9a6b3; font-size: 9px; line-height: 1.55; }
+.ai-plan-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.ai-plan-actions button, .undo-ai { border: 1px solid #575260; border-radius: 8px; padding: 6px 9px; background: #24252d; color: #c2c0ca; cursor: pointer; font-size: 9px; }
+.ai-plan-actions #applyAi { border-color: #7e68de; background: #7254ec; color: white; }
+.ai-plan-actions button:hover, .undo-ai:hover { filter: brightness(1.12); }
+.undo-ai { width: 100%; margin-top: 8px; border-color: #55487f; color: #bbaaff; }
 
 .theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .theme-button {
