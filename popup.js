@@ -125,7 +125,10 @@ async function runSmartPrompt() {
       throw new Error(response.configured ? "The AI returned no usable settings." : 'Try a request such as "larger text and hide images."');
     }
     await applyPatch(patch);
-    document.getElementById("aiMode").textContent = response.configured ? "AI connected" : "Local rules";
+    const modeLabel = response.configured
+      ? response.provider === "anthropic" ? "Claude connected" : "AI connected"
+      : "Local rules";
+    document.getElementById("aiMode").textContent = modeLabel;
     prompt.value = "";
   } catch (error) {
     setStatus(error.message, true);

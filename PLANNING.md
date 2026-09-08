@@ -17,7 +17,7 @@ PageFlow AI is a Chrome and Edge extension that helps users improve webpage appe
 
 ## 3. Current baseline
 
-The current `1.0.0` development version provides:
+The current `1.1.0` development version provides:
 
 - Original, Warm, and Contrast themes
 - image hiding and grayscale images
@@ -26,7 +26,7 @@ The current `1.0.0` development version provides:
 - font-size, line-height, saturation, brightness, and reading-width controls
 - per-origin settings stored with `chrome.storage.local`
 - English local natural-language shortcuts
-- optional direct access to a Chat Completions-compatible API
+- optional direct access to OpenAI-compatible and Anthropic Claude APIs
 
 Current AI request flow:
 
@@ -34,7 +34,7 @@ Current AI request flow:
 Popup prompt
     -> popup.js
     -> service-worker.js
-    -> configured Chat Completions endpoint
+    -> configured OpenAI-compatible or Claude endpoint
     -> JSON settings
     -> content-script.js validation
     -> webpage styles
@@ -186,8 +186,8 @@ Status: Complete
 
 Status: Current
 
-- [x] Add a configurable Chat Completions endpoint.
-- [x] Add model and development-key settings.
+- [x] Add configurable OpenAI-compatible and Anthropic Claude providers.
+- [x] Add provider, model, endpoint, and development-key settings.
 - [x] Send prompts through the service worker.
 - [x] Parse JSON settings returned by the model.
 - [ ] Add clearer connection diagnostics.
@@ -293,7 +293,7 @@ An AI customization feature is complete when:
 
 - Which backend hosting platform will be used?
 - Will users bring their own credentials or use PageFlow accounts?
-- Which GenAI provider and model will be supported first?
+- Which provider should be the default for a public release?
 - Which page-context fields are necessary?
 - Should every AI proposal require confirmation?
 - How long should conversation history be retained?

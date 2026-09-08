@@ -1,8 +1,8 @@
 # PageFlow AI
 
-PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with an OpenAI Chat Completions-compatible API.
+PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.0.0`
+Version: `1.1.0`
 
 ## Features
 
@@ -14,7 +14,7 @@ Version: `1.0.0`
 - Settings saved separately for each website origin
 - One-click website reset
 - English natural-language shortcuts that work without an API
-- Optional GenAI page customization through a Chat Completions-compatible endpoint
+- Optional GenAI page customization through OpenAI-compatible or Anthropic Claude APIs
 
 The Dark theme is not included in this version.
 
@@ -53,9 +53,9 @@ When no API endpoint is configured, the popup displays **Local rules**. These co
 
 ## Connect a GenAI service
 
-Click **AI settings** at the bottom of the popup. The current development version accepts an endpoint using the OpenAI Chat Completions request and response format.
+Click **AI settings** at the bottom of the popup and choose **OpenAI-compatible** or **Anthropic Claude**. The official endpoint is filled automatically when the provider changes, and a trusted custom proxy endpoint may still be entered.
 
-### Direct OpenAI connection for personal testing
+### OpenAI-compatible connection for personal testing
 
 Enter the following values:
 
@@ -76,6 +76,18 @@ Your personal development API key
 
 Click **Save and authorize**, then approve the browser permission request for the API origin.
 
+### Anthropic Claude connection for personal testing
+
+Choose **Anthropic Claude**. The extension automatically fills:
+
+```text
+https://api.anthropic.com/v1/messages
+```
+
+Enter a Claude model ID available in your Anthropic Console and your Anthropic API key, then click **Save and authorize**.
+
+See the official [Anthropic Messages API reference](https://docs.anthropic.com/en/api/messages) for the native request format.
+
 Open a regular webpage, refresh it, and open PageFlow AI. Enter a page-customization request in the **Describe your ideal page** field and press Enter or click the send button.
 
 For example:
@@ -84,7 +96,7 @@ For example:
 Increase the text size, improve line spacing, and hide images.
 ```
 
-If the request succeeds, the popup displays **AI connected** and applies the returned settings immediately.
+If the request succeeds, the popup displays **Claude connected** for Anthropic or **AI connected** for an OpenAI-compatible provider, then applies the returned settings immediately.
 
 The current version is a page-customization command interface rather than a general-purpose chatbot. It does not maintain multi-turn conversation history.
 
@@ -125,7 +137,7 @@ This version cannot use GenAI to:
 Prompt field
     -> popup.js
     -> service-worker.js
-    -> configured Chat Completions endpoint
+    -> configured OpenAI-compatible or Claude endpoint
     -> JSON settings
     -> content-script.js validation
     -> webpage styles
@@ -195,7 +207,7 @@ The model response was not valid JSON in the format expected by `service-worker.
 - `manifest.json`: extension metadata and permissions
 - `popup.html`, `popup.css`, `popup.js`: toolbar interface and interactions
 - `content-script.js`: page styling, validation, and per-site persistence
-- `service-worker.js`: local-rule and AI service adapter
+- `service-worker.js`: local-rule, OpenAI-compatible, and Anthropic Claude adapters
 - `options.html`, `options.css`, `options.js`: AI configuration page
 - `PLANNING.md`: product roadmap, architecture, testing, and release plan
 - `icons/`: extension icons

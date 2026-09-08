@@ -10,8 +10,9 @@ h1 { margin: 0; font-size: 30px; letter-spacing: -.04em; }
 .intro { color: #686773; line-height: 1.7; margin: 12px 0 26px; }
 form { display: grid; gap: 18px; }
 label { display: grid; gap: 7px; font-size: 13px; font-weight: 700; }
-input { border: 1px solid #d9d6e2; background: #fbfbfd; border-radius: 10px; padding: 12px 13px; outline: none; font: inherit; font-weight: 400; }
-input:focus { border-color: #8067e4; box-shadow: 0 0 0 4px #eeeaff; }
+input, select { border: 1px solid #d9d6e2; background: #fbfbfd; border-radius: 10px; padding: 12px 13px; outline: none; font: inherit; font-weight: 400; }
+input:focus, select:focus { border-color: #8067e4; box-shadow: 0 0 0 4px #eeeaff; }
+.field-hint { color: #777482; font-size: 11px; font-weight: 500; line-height: 1.45; }
 .notice { border: 1px solid #e5dca9; background: #fffbed; border-radius: 12px; padding: 13px 15px; color: #655c2d; }
 .notice b { font-size: 12px; }
 .notice p { margin: 5px 0 0; font-size: 12px; line-height: 1.55; }

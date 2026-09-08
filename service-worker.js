@@ -20,45 +20,92 @@ function extractJson(text) {
   return JSON.parse(cleaned.slice(start, end + 1));
 }
 
+function anthropicResponseText(data) {
+  return (data.content || [])
+    .filter((item) => item?.type === "text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n");
+}
+
+function apiErrorDetail(text) {
+  try {
+    const data = JSON.parse(text);
+    return data.error?.message || data.message || text;
+  } catch {
+    return text;
+  }
+}
+
 async function requestAi(prompt, currentState) {
   const stored = await chrome.storage.local.get(AI_CONFIG_KEY);
   const config = stored[AI_CONFIG_KEY];
   if (!config?.endpoint) return { configured: false };
 
-  const headers = { "Content-Type": "application/json" };
-  if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+  const provider = config.provider === "anthropic" ? "anthropic" : "openai";
+  const userText = `Current settings: ${JSON.stringify(currentState)}\nRequest: ${prompt}`;
+  let headers;
+  let requestBody;
+
+  if (provider === "anthropic") {
+    if (!config.model) throw new Error("Enter a Claude model ID in AI settings.");
+
+    headers = {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    };
+    if (config.apiKey) headers["x-api-key"] = config.apiKey;
+
+    requestBody = {
+      model: config.model,
+      max_tokens: 600,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: userText }]
+        }
+      ]
+    };
+  } else {
+    headers = { "Content-Type": "application/json" };
+    if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+
+    requestBody = {
+      model: config.model || undefined,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userText }
+      ],
+      temperature: 0.2
+    };
+  }
 
   const response = await fetch(config.endpoint, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      model: config.model || undefined,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Current settings: ${JSON.stringify(currentState)}\nRequest: ${prompt}`
-        }
-      ],
-      temperature: 0.2
-    })
+    body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`API request failed (${response.status}): ${detail.slice(0, 160)}`);
+    const detail = apiErrorDetail(await response.text());
+    throw new Error(`${provider === "anthropic" ? "Claude" : "AI"} API request failed (${response.status}): ${detail.slice(0, 180)}`);
   }
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content ?? data.output_text ?? data.result ?? data;
-  return { configured: true, patch: extractJson(content) };
+  const content = provider === "anthropic"
+    ? anthropicResponseText(data)
+    : data.choices?.[0]?.message?.content ?? data.output_text ?? data.result ?? data;
+
+  if (!content) throw new Error("The AI service returned no text response.");
+  return { configured: true, provider, patch: extractJson(content) };
 }
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(AI_CONFIG_KEY).then((stored) => {
     if (!stored[AI_CONFIG_KEY]) {
       chrome.storage.local.set({
-        [AI_CONFIG_KEY]: { endpoint: "", model: "", apiKey: "" }
+        [AI_CONFIG_KEY]: { provider: "openai", endpoint: "", model: "", apiKey: "" }
       });
     }
   });

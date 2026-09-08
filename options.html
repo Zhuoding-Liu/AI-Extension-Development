@@ -12,12 +12,29 @@
       <section class="panel">
         <p class="eyebrow">AI INTEGRATION</p>
         <h1>Connect your AI service</h1>
-        <p class="intro">The extension supports OpenAI Chat Completions-compatible APIs. Without an API configuration, natural-language requests use local rules.</p>
+        <p class="intro">Choose OpenAI-compatible or Anthropic Claude. Without an API configuration, natural-language requests continue to use local rules.</p>
 
         <form id="aiForm">
-          <label>API endpoint<input id="endpoint" type="url" placeholder="https://your-proxy.example.com/v1/chat/completions" /></label>
-          <label>Model name<input id="model" type="text" placeholder="For example: your-model-name" /></label>
-          <label>API key (development only)<input id="apiKey" type="password" autocomplete="off" placeholder="Optional when your proxy handles authentication" /></label>
+          <label>
+            AI provider
+            <select id="provider">
+              <option value="openai">OpenAI-compatible</option>
+              <option value="anthropic">Anthropic Claude</option>
+            </select>
+          </label>
+          <label>
+            API endpoint
+            <input id="endpoint" type="url" />
+            <small class="field-hint" id="endpointHint"></small>
+          </label>
+          <label>
+            Model name
+            <input id="model" type="text" />
+          </label>
+          <label>
+            API key (development only)
+            <input id="apiKey" type="password" autocomplete="off" />
+          </label>
           <div class="notice"><b>Production recommendation</b><p>Keep provider credentials in your own backend proxy. Keys stored by a browser extension can be read by users of the device and should not be distributed to end users.</p></div>
           <div class="actions"><button type="button" id="clear">Clear configuration</button><button type="submit">Save and authorize</button></div>
         </form>
