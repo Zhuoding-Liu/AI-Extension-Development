@@ -10,7 +10,13 @@ const DEFAULT_STATE = {
   lineHeight: 1.6,
   saturation: 100,
   brightness: 100,
-  readingWidth: 0
+  readingWidth: 0,
+  sidebarMode: "original",
+  navigationMode: "original",
+  headerMode: "original",
+  footerMode: "original",
+  paragraphSpacing: 0,
+  pagePadding: 0
 };
 
 let activeTabId = null;
@@ -111,12 +117,22 @@ async function runSmartPrompt() {
   }
 
   promptButton.disabled = true;
-  setStatus("Understanding your preferences…");
+  setStatus("Reading the current page safely…");
   try {
+    let pageContext = {};
+    try {
+      const contextResponse = await sendToPage({ type: "PAGEFLOW_GET_CONTEXT" });
+      if (contextResponse?.ok) pageContext = contextResponse.context || {};
+    } catch {
+      // AI customization can still use the current PageFlow settings without context.
+    }
+
+    setStatus("Understanding your preferences…");
     const response = await chrome.runtime.sendMessage({
       type: "PAGEFLOW_AI_REQUEST",
       prompt: text,
-      currentState
+      currentState,
+      pageContext
     });
     if (!response?.ok) throw new Error(response?.error || "The AI request failed.");
 

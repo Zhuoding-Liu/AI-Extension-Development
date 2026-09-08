@@ -2,7 +2,7 @@
 
 PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.1.0`
+Version: `1.2.0`
 
 ## Features
 
@@ -14,7 +14,8 @@ Version: `1.1.0`
 - Settings saved separately for each website origin
 - One-click website reset
 - English natural-language shortcuts that work without an API
-- Optional GenAI page customization through OpenAI-compatible or Anthropic Claude APIs
+- Page-aware GenAI customization through OpenAI-compatible or Anthropic Claude APIs
+- Filtered DOM summaries containing semantic regions, headings, a limited visible-text excerpt, and basic appearance
 
 The Dark theme is not included in this version.
 
@@ -120,6 +121,12 @@ The GenAI service can return only the following page settings:
 | `saturation` | number | 0–200 |
 | `brightness` | number | 60–140 |
 | `readingWidth` | number | 0 or 480–1200 |
+| `sidebarMode` | string | `original`, `hide`, `dim` |
+| `navigationMode` | string | `original`, `hide`, `dim`, `compact` |
+| `headerMode` | string | `original`, `hide`, `compact` |
+| `footerMode` | string | `original`, `hide` |
+| `paragraphSpacing` | number | 0–40 |
+| `pagePadding` | number | 0–48 |
 
 AI output is validated again by `content-script.js` before being applied.
 
@@ -135,7 +142,8 @@ This version cannot use GenAI to:
 
 ```text
 Prompt field
-    -> popup.js
+    -> popup.js requests a filtered page summary
+    -> content-script.js analyzes the rendered page
     -> service-worker.js
     -> configured OpenAI-compatible or Claude endpoint
     -> JSON settings
@@ -143,7 +151,7 @@ Prompt field
     -> webpage styles
 ```
 
-The extension sends the user's request and the current PageFlow settings. It does not currently send the complete page HTML to the model.
+The extension sends the user's request, current PageFlow settings, hostname/path without query parameters, semantic-region statistics, headings, a redacted visible-text excerpt, and basic computed appearance. It never sends complete page HTML, form values, cookies, local storage, query strings, or URL fragments.
 
 The model is instructed to return a JSON object. A typical response looks like:
 

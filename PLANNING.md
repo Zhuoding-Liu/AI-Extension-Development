@@ -17,7 +17,7 @@ PageFlow AI is a Chrome and Edge extension that helps users improve webpage appe
 
 ## 3. Current baseline
 
-The current `1.1.0` development version provides:
+The current `1.2.0` development version provides:
 
 - Original, Warm, and Contrast themes
 - image hiding and grayscale images
@@ -27,6 +27,8 @@ The current `1.1.0` development version provides:
 - per-origin settings stored with `chrome.storage.local`
 - English local natural-language shortcuts
 - optional direct access to OpenAI-compatible and Anthropic Claude APIs
+- filtered page-context summaries for structure-aware AI customization
+- safe semantic-region layout controls
 
 Current AI request flow:
 
@@ -190,6 +192,8 @@ Status: Current
 - [x] Add provider, model, endpoint, and development-key settings.
 - [x] Send prompts through the service worker.
 - [x] Parse JSON settings returned by the model.
+- [x] Add a filtered page-context summary.
+- [x] Add allowlisted semantic-region layout settings.
 - [ ] Add clearer connection diagnostics.
 - [ ] Test malformed and partial AI responses.
 
@@ -199,7 +203,7 @@ Status: Planned
 
 - [ ] Move the provider credential to a backend.
 - [ ] Replace free-form JSON parsing with a strict output schema.
-- [ ] Add a safe page-context summary.
+- [ ] Add explicit user controls for page-summary sharing.
 - [ ] Add multi-turn conversation history.
 - [ ] Add Apply, Dismiss, and Undo actions.
 - [ ] Add backend authentication and rate limiting.
