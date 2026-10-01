@@ -64,10 +64,11 @@ form.addEventListener("submit", async (event) => {
     let originPattern;
     try {
       const parsed = new URL(url);
-      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Unsupported protocol");
+      const isLocalDevelopment = parsed.protocol === "http:" && ["localhost", "127.0.0.1"].includes(parsed.hostname);
+      if (parsed.protocol !== "https:" && !isLocalDevelopment) throw new Error("HTTPS is required");
       originPattern = `${parsed.origin}/*`;
     } catch {
-      status.textContent = "Enter a valid HTTP or HTTPS API endpoint.";
+      status.textContent = "Enter an HTTPS endpoint. HTTP is allowed only for localhost development.";
       status.style.color = "#c34e4e";
       return;
     }
@@ -80,6 +81,8 @@ form.addEventListener("submit", async (event) => {
     }
   }
 
+  const previous = await chrome.storage.local.get(STORAGE_KEY);
+  const previousEndpoint = previous[STORAGE_KEY]?.endpoint;
   await chrome.storage.local.set({
     [STORAGE_KEY]: {
       provider: providerValue,
@@ -88,6 +91,13 @@ form.addEventListener("submit", async (event) => {
       apiKey: apiKey.value.trim()
     }
   });
+  if (previousEndpoint && previousEndpoint !== url) {
+    try {
+      await chrome.permissions.remove({ origins: [`${new URL(previousEndpoint).origin}/*`] });
+    } catch {
+      // Ignore stale or invalid legacy endpoint permissions.
+    }
+  }
 
   const providerName = providerValue === "anthropic" ? "Anthropic Claude" : "OpenAI-compatible";
   status.textContent = url
@@ -97,6 +107,8 @@ form.addEventListener("submit", async (event) => {
 });
 
 document.getElementById("clear").addEventListener("click", async () => {
+  const stored = await chrome.storage.local.get(STORAGE_KEY);
+  const previousEndpoint = stored[STORAGE_KEY]?.endpoint;
   provider.value = "openai";
   endpoint.value = "";
   model.value = "";
@@ -105,6 +117,13 @@ document.getElementById("clear").addEventListener("click", async () => {
   await chrome.storage.local.set({
     [STORAGE_KEY]: { provider: "openai", endpoint: "", model: "", apiKey: "" }
   });
+  if (previousEndpoint) {
+    try {
+      await chrome.permissions.remove({ origins: [`${new URL(previousEndpoint).origin}/*`] });
+    } catch {
+      // Ignore stale or invalid legacy endpoint permissions.
+    }
+  }
   status.textContent = "AI configuration cleared.";
   status.style.color = "#3f8a63";
 });

@@ -30,7 +30,25 @@ const DEFAULT_STATE = Object.freeze({
   tableOfContents: false,
   readingProgress: false,
   backToTop: false,
-  highlightHeadings: false
+  highlightHeadings: false,
+  viewMode: "adapt",
+  rebuildLayout: "reading",
+  pageSearch: false,
+  readingTime: false,
+  contentSummary: false,
+  glossary: false,
+  paragraphTranslation: false,
+  simplifyTables: false,
+  imageViewer: false,
+  hideVideos: false,
+  dyslexiaMode: false,
+  lowVisionMode: false,
+  keyboardNavigation: false,
+  formAccessibilityAudit: false,
+  regionVisibilityPanel: false,
+  summaryText: "",
+  glossaryItems: [],
+  paragraphTranslations: []
 });
 
 const ALLOWED_THEMES = new Set(["original", "warm", "contrast"]);
@@ -41,9 +59,31 @@ const ALLOWED_FOOTER_MODES = new Set(["original", "hide"]);
 const ALLOWED_LAYOUT_PRESETS = new Set(["original", "reading", "cards", "workspace"]);
 const ALLOWED_FONT_STYLES = new Set(["original", "sans", "serif", "mono"]);
 const ALLOWED_TEXT_ALIGNMENTS = new Set(["original", "left", "center", "justify"]);
+const ALLOWED_VIEW_MODES = new Set(["adapt", "rebuild"]);
+const ALLOWED_REBUILD_LAYOUTS = new Set(["reading", "magazine", "cards"]);
+const FEATURE_REGISTRY = Object.freeze({
+  tableOfContents: { label: "Collapsible table of contents", modes: ["adapt", "rebuild"] },
+  pageSearch: { label: "Page search", modes: ["adapt", "rebuild"] },
+  readingTime: { label: "Reading time and progress", modes: ["adapt", "rebuild"] },
+  backToTop: { label: "Back to top", modes: ["adapt", "rebuild"] },
+  contentSummary: { label: "Key content summary", modes: ["adapt", "rebuild"] },
+  glossary: { label: "Glossary explanations", modes: ["adapt", "rebuild"] },
+  paragraphTranslation: { label: "Paragraph translations", modes: ["adapt", "rebuild"] },
+  simplifyTables: { label: "Simplified table view", modes: ["adapt", "rebuild"] },
+  imageViewer: { label: "Image viewer", modes: ["adapt", "rebuild"] },
+  hideVideos: { label: "Hide videos", modes: ["adapt", "rebuild"] },
+  dyslexiaMode: { label: "Dyslexia-friendly mode", modes: ["adapt", "rebuild"] },
+  lowVisionMode: { label: "Low Vision mode", modes: ["adapt", "rebuild"] },
+  keyboardNavigation: { label: "Keyboard heading navigation", modes: ["adapt", "rebuild"] },
+  formAccessibilityAudit: { label: "Form accessibility audit", modes: ["adapt"] },
+  regionVisibilityPanel: { label: "Region visibility panel", modes: ["adapt"] }
+});
 const aiStateHistory = [];
 let currentState = { ...DEFAULT_STATE };
 let progressScrollHandler = null;
+let imageViewerHandler = null;
+let keyboardNavigationHandler = null;
+let pendingRebuildState = null;
 
 function clamp(value, min, max, fallback) {
   const number = Number(value);
@@ -80,21 +120,51 @@ function sanitizePalette(candidate) {
   return { background, text, accent };
 }
 
+function strictBoolean(value, fallback = false) {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function sanitizeTextValue(value, maxLength) {
+  return typeof value === "string" ? cleanContextText(value, maxLength) : "";
+}
+
+function sanitizeGlossaryItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 16).map((item) => ({
+    term: sanitizeTextValue(item?.term, 80),
+    definition: sanitizeTextValue(item?.definition, 320)
+  })).filter((item) => item.term && item.definition);
+}
+
+function sanitizeParagraphTranslations(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 24).map((item) => ({
+    paragraphId: /^p\d{1,3}$/.test(String(item?.paragraphId || "")) ? String(item.paragraphId) : "",
+    text: sanitizeTextValue(item?.text, 700)
+  })).filter((item) => item.paragraphId && item.text);
+}
+
+function sanitizeReadingWidth(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return 0;
+  return Math.min(1200, Math.max(480, number));
+}
+
 function sanitizeState(candidate = {}) {
   const palette = sanitizePalette(candidate);
   return {
     theme: ALLOWED_THEMES.has(candidate.theme) ? candidate.theme : DEFAULT_STATE.theme,
-    hideImages: Boolean(candidate.hideImages),
-    grayscaleImages: Boolean(candidate.grayscaleImages),
-    readableFont: Boolean(candidate.readableFont),
-    underlineLinks: Boolean(candidate.underlineLinks),
-    reduceMotion: Boolean(candidate.reduceMotion),
-    focusMode: Boolean(candidate.focusMode),
+    hideImages: strictBoolean(candidate.hideImages, DEFAULT_STATE.hideImages),
+    grayscaleImages: strictBoolean(candidate.grayscaleImages, DEFAULT_STATE.grayscaleImages),
+    readableFont: strictBoolean(candidate.readableFont, DEFAULT_STATE.readableFont),
+    underlineLinks: strictBoolean(candidate.underlineLinks, DEFAULT_STATE.underlineLinks),
+    reduceMotion: strictBoolean(candidate.reduceMotion, DEFAULT_STATE.reduceMotion),
+    focusMode: strictBoolean(candidate.focusMode, DEFAULT_STATE.focusMode),
     fontScale: clamp(candidate.fontScale, 80, 160, DEFAULT_STATE.fontScale),
     lineHeight: clamp(candidate.lineHeight, 1.2, 2.2, DEFAULT_STATE.lineHeight),
     saturation: clamp(candidate.saturation, 0, 200, DEFAULT_STATE.saturation),
     brightness: clamp(candidate.brightness, 60, 140, DEFAULT_STATE.brightness),
-    readingWidth: clamp(candidate.readingWidth, 0, 1200, DEFAULT_STATE.readingWidth),
+    readingWidth: sanitizeReadingWidth(candidate.readingWidth),
     sidebarMode: ALLOWED_SIDEBAR_MODES.has(candidate.sidebarMode) ? candidate.sidebarMode : DEFAULT_STATE.sidebarMode,
     navigationMode: ALLOWED_NAVIGATION_MODES.has(candidate.navigationMode) ? candidate.navigationMode : DEFAULT_STATE.navigationMode,
     headerMode: ALLOWED_HEADER_MODES.has(candidate.headerMode) ? candidate.headerMode : DEFAULT_STATE.headerMode,
@@ -109,10 +179,28 @@ function sanitizeState(candidate = {}) {
     textAlign: ALLOWED_TEXT_ALIGNMENTS.has(candidate.textAlign) ? candidate.textAlign : DEFAULT_STATE.textAlign,
     sectionGap: clamp(candidate.sectionGap, 0, 48, DEFAULT_STATE.sectionGap),
     cornerRadius: clamp(candidate.cornerRadius, 0, 32, DEFAULT_STATE.cornerRadius),
-    tableOfContents: Boolean(candidate.tableOfContents),
-    readingProgress: Boolean(candidate.readingProgress),
-    backToTop: Boolean(candidate.backToTop),
-    highlightHeadings: Boolean(candidate.highlightHeadings)
+    tableOfContents: strictBoolean(candidate.tableOfContents, DEFAULT_STATE.tableOfContents),
+    readingProgress: strictBoolean(candidate.readingProgress, DEFAULT_STATE.readingProgress),
+    backToTop: strictBoolean(candidate.backToTop, DEFAULT_STATE.backToTop),
+    highlightHeadings: strictBoolean(candidate.highlightHeadings, DEFAULT_STATE.highlightHeadings),
+    viewMode: ALLOWED_VIEW_MODES.has(candidate.viewMode) ? candidate.viewMode : DEFAULT_STATE.viewMode,
+    rebuildLayout: ALLOWED_REBUILD_LAYOUTS.has(candidate.rebuildLayout) ? candidate.rebuildLayout : DEFAULT_STATE.rebuildLayout,
+    pageSearch: strictBoolean(candidate.pageSearch, DEFAULT_STATE.pageSearch),
+    readingTime: strictBoolean(candidate.readingTime, DEFAULT_STATE.readingTime),
+    contentSummary: strictBoolean(candidate.contentSummary, DEFAULT_STATE.contentSummary),
+    glossary: strictBoolean(candidate.glossary, DEFAULT_STATE.glossary),
+    paragraphTranslation: strictBoolean(candidate.paragraphTranslation, DEFAULT_STATE.paragraphTranslation),
+    simplifyTables: strictBoolean(candidate.simplifyTables, DEFAULT_STATE.simplifyTables),
+    imageViewer: strictBoolean(candidate.imageViewer, DEFAULT_STATE.imageViewer),
+    hideVideos: strictBoolean(candidate.hideVideos, DEFAULT_STATE.hideVideos),
+    dyslexiaMode: strictBoolean(candidate.dyslexiaMode, DEFAULT_STATE.dyslexiaMode),
+    lowVisionMode: strictBoolean(candidate.lowVisionMode, DEFAULT_STATE.lowVisionMode),
+    keyboardNavigation: strictBoolean(candidate.keyboardNavigation, DEFAULT_STATE.keyboardNavigation),
+    formAccessibilityAudit: strictBoolean(candidate.formAccessibilityAudit, DEFAULT_STATE.formAccessibilityAudit),
+    regionVisibilityPanel: strictBoolean(candidate.regionVisibilityPanel, DEFAULT_STATE.regionVisibilityPanel),
+    summaryText: sanitizeTextValue(candidate.summaryText, 1200),
+    glossaryItems: sanitizeGlossaryItems(candidate.glossaryItems),
+    paragraphTranslations: sanitizeParagraphTranslations(candidate.paragraphTranslations)
   };
 }
 
@@ -289,6 +377,61 @@ function ensureStyles() {
       padding-inline-start: .55em !important;
     }
 
+    html.pageflow-hide-videos :where(video, iframe[src*="youtube"], iframe[src*="vimeo"]) {
+      display: none !important;
+    }
+
+    html.pageflow-simple-tables table {
+      display: block !important;
+      max-width: 100% !important;
+      overflow-x: auto !important;
+      border-collapse: collapse !important;
+    }
+
+    html.pageflow-simple-tables :where(th, td) {
+      padding: .65em .8em !important;
+      border: 1px solid color-mix(in srgb, currentColor 22%, transparent) !important;
+      text-align: start !important;
+    }
+
+    html.pageflow-simple-tables tbody tr:nth-child(even) {
+      background: color-mix(in srgb, var(--pageflow-accent, #7254ec) 7%, transparent) !important;
+    }
+
+    html.pageflow-dyslexia body,
+    html.pageflow-dyslexia :where(button, input, textarea, select) {
+      font-family: "Atkinson Hyperlegible", "Verdana", "Arial", sans-serif !important;
+      letter-spacing: .055em !important;
+      word-spacing: .12em !important;
+    }
+
+    html.pageflow-dyslexia :where(p, li) {
+      line-height: 1.85 !important;
+      max-width: 72ch !important;
+    }
+
+    html.pageflow-low-vision {
+      font-size: max(125%, var(--pageflow-font-scale, 125%)) !important;
+    }
+
+    html.pageflow-low-vision :where(button, input, textarea, select, a) {
+      min-height: 32px !important;
+      outline-offset: 3px !important;
+    }
+
+    html.pageflow-low-vision :focus-visible {
+      outline: 4px solid var(--pageflow-accent, #7254ec) !important;
+    }
+
+    html [data-pageflow-form-issue="true"] {
+      outline: 3px dashed #c62828 !important;
+      outline-offset: 2px !important;
+    }
+
+    html [data-pageflow-user-hidden="true"] {
+      display: none !important;
+    }
+
     @media (max-width: 900px) {
       html.pageflow-layout-workspace :where(main, [role="main"]) { grid-template-columns: minmax(0, 1fr) !important; }
     }
@@ -322,9 +465,10 @@ function reconcileTableOfContents(enabled) {
   const host = document.createElement("div");
   host.id = "pageflow-toc-host";
   const shadow = host.attachShadow({ mode: "open" });
-  const panel = document.createElement("nav");
+  const panel = document.createElement("details");
+  panel.open = true;
   panel.setAttribute("aria-label", "PageFlow table of contents");
-  const title = document.createElement("strong");
+  const title = document.createElement("summary");
   title.textContent = "On this page";
   panel.appendChild(title);
 
@@ -340,8 +484,8 @@ function reconcileTableOfContents(enabled) {
   const style = document.createElement("style");
   style.textContent = `
     :host { all: initial; position: fixed; z-index: 2147483646; top: 88px; right: 18px; width: min(250px, calc(100vw - 36px)); }
-    nav { box-sizing: border-box; max-height: min(62vh, 520px); overflow: auto; padding: 14px; border: 1px solid #d9d5e8; border-radius: 14px; background: rgba(255,255,255,.96); box-shadow: 0 12px 34px rgba(30,24,55,.18); color: #26232f; font: 13px/1.35 Arial, sans-serif; backdrop-filter: blur(10px); }
-    strong { display: block; margin-bottom: 8px; color: #57418e; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    details { box-sizing: border-box; max-height: min(62vh, 520px); overflow: auto; padding: 14px; border: 1px solid #d9d5e8; border-radius: 14px; background: rgba(255,255,255,.96); box-shadow: 0 12px 34px rgba(30,24,55,.18); color: #26232f; font: 13px/1.35 Arial, sans-serif; backdrop-filter: blur(10px); }
+    summary { margin-bottom: 8px; color: #57418e; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
     button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 6px 7px; border-radius: 7px; cursor: pointer; color: #34303d; }
     button:hover, button:focus-visible { background: #eee9ff; color: #4d31a3; outline: none; }
     .level-2 { padding-left: 16px; font-size: 12px; }
@@ -370,7 +514,9 @@ function reconcileReadingProgress(enabled) {
   host.id = "pageflow-progress-host";
   const shadow = host.attachShadow({ mode: "open" });
   const track = document.createElement("div");
-  track.innerHTML = '<span id="bar"></span>';
+  const bar = document.createElement("span");
+  bar.id = "bar";
+  track.appendChild(bar);
   const style = document.createElement("style");
   style.textContent = `
     :host { all: initial; position: fixed; z-index: 2147483647; inset: 0 0 auto; height: 4px; pointer-events: none; }
@@ -407,16 +553,613 @@ function reconcileBackToTop(enabled) {
   document.documentElement.appendChild(host);
 }
 
+function readableParagraphs(root = document.body) {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll("p"))
+    .filter((paragraph) => !paragraph.closest("[id^='pageflow-'], script, style, template, [aria-hidden='true']"))
+    .filter((paragraph) => cleanContextText(paragraph.textContent, 800).length >= 24)
+    .slice(0, 120);
+}
+
+function clearFeatureArtifacts() {
+  document.getElementById("pageflow-tools-host")?.remove();
+  document.getElementById("pageflow-image-viewer-host")?.remove();
+  document.querySelectorAll("[data-pageflow-translation-host]").forEach((node) => node.remove());
+  document.querySelectorAll("[data-pageflow-form-issue]").forEach((node) => node.removeAttribute("data-pageflow-form-issue"));
+  document.querySelectorAll("[data-pageflow-user-hidden]").forEach((node) => node.removeAttribute("data-pageflow-user-hidden"));
+  if (imageViewerHandler) {
+    document.removeEventListener("click", imageViewerHandler, true);
+    imageViewerHandler = null;
+  }
+  if (keyboardNavigationHandler) {
+    document.removeEventListener("keydown", keyboardNavigationHandler, true);
+    keyboardNavigationHandler = null;
+  }
+}
+
+function addToolSection(container, titleText, bodyNode, open = false) {
+  const details = document.createElement("details");
+  details.open = open;
+  const summary = document.createElement("summary");
+  summary.textContent = titleText;
+  details.append(summary, bodyNode);
+  container.appendChild(details);
+}
+
+function formHasAccessibleName(control) {
+  if (control.labels?.length) return true;
+  return Boolean(control.getAttribute("aria-label") || control.getAttribute("aria-labelledby") || control.getAttribute("title"));
+}
+
+function collectRegionEntries() {
+  const definitions = [
+    ["Header", "header, [role='banner']"],
+    ["Navigation", "nav, [role='navigation']"],
+    ["Main content", "main, [role='main']"],
+    ["Sidebar", "aside, [role='complementary']"],
+    ["Footer", "footer"]
+  ];
+  return definitions.map(([label, selector]) => ({ label, element: document.querySelector(selector) })).filter((entry) => entry.element);
+}
+
+function reconcileTranslations(state) {
+  document.querySelectorAll("[data-pageflow-translation-host]").forEach((node) => node.remove());
+  if (!state.paragraphTranslation || !state.paragraphTranslations.length) return;
+  const primaryContent = document.querySelector("article, main, [role='main']") || document.body;
+  const paragraphs = readableParagraphs(primaryContent);
+  const byId = new Map(state.paragraphTranslations.map((item) => [item.paragraphId, item.text]));
+  paragraphs.forEach((paragraph, index) => {
+    const text = byId.get(`p${index + 1}`);
+    if (!text) return;
+    const host = document.createElement("div");
+    host.dataset.pageflowTranslationHost = "true";
+    const shadow = host.attachShadow({ mode: "open" });
+    const box = document.createElement("div");
+    box.textContent = text;
+    const style = document.createElement("style");
+    style.textContent = `:host{all:initial;display:block;margin:.45em 0 1em}div{padding:.7em .85em;border-inline-start:3px solid #7254ec;background:#f4f1ff;color:#30284a;border-radius:0 8px 8px 0;font:14px/1.55 Arial,sans-serif}`;
+    shadow.append(style, box);
+    paragraph.insertAdjacentElement("afterend", host);
+  });
+}
+
+function reconcileImageViewer(enabled) {
+  document.getElementById("pageflow-image-viewer-host")?.remove();
+  if (imageViewerHandler) {
+    document.removeEventListener("click", imageViewerHandler, true);
+    imageViewerHandler = null;
+  }
+  if (!enabled) return;
+  imageViewerHandler = (event) => {
+    const image = event.target.closest?.("img");
+    if (!image || !event.altKey || image.closest("[id^='pageflow-']")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const host = document.createElement("div");
+    host.id = "pageflow-image-viewer-host";
+    const shadow = host.attachShadow({ mode: "open" });
+    const backdrop = document.createElement("button");
+    backdrop.type = "button";
+    backdrop.setAttribute("aria-label", "Close image viewer");
+    const preview = document.createElement("img");
+    preview.src = image.currentSrc || image.src;
+    preview.alt = image.alt || "Expanded page image";
+    const style = document.createElement("style");
+    style.textContent = `:host{all:initial;position:fixed;inset:0;z-index:2147483647;background:rgba(8,9,13,.92);display:grid;place-items:center;padding:28px}button{position:absolute;inset:0;border:0;background:transparent;cursor:zoom-out}img{position:relative;max-width:94vw;max-height:90vh;object-fit:contain;border-radius:10px;box-shadow:0 20px 70px #000;pointer-events:none}`;
+    backdrop.addEventListener("click", () => host.remove());
+    shadow.append(style, backdrop, preview);
+    document.documentElement.appendChild(host);
+  };
+  document.addEventListener("click", imageViewerHandler, true);
+}
+
+function reconcileKeyboardNavigation(enabled) {
+  if (keyboardNavigationHandler) {
+    document.removeEventListener("keydown", keyboardNavigationHandler, true);
+    keyboardNavigationHandler = null;
+  }
+  if (!enabled) return;
+  keyboardNavigationHandler = (event) => {
+    if (!event.altKey || !["ArrowDown", "ArrowUp"].includes(event.key)) return;
+    const headings = Array.from(document.querySelectorAll("main h1, main h2, main h3, article h1, article h2, article h3, [role='main'] h1, [role='main'] h2, [role='main'] h3"));
+    if (!headings.length) return;
+    event.preventDefault();
+    const currentIndex = headings.findIndex((heading) => heading.getBoundingClientRect().top > 12);
+    const index = event.key === "ArrowDown"
+      ? Math.min(headings.length - 1, currentIndex < 0 ? headings.length - 1 : currentIndex)
+      : Math.max(0, (currentIndex < 0 ? headings.length : currentIndex) - 1);
+    headings[index].scrollIntoView({ behavior: currentState.reduceMotion ? "auto" : "smooth", block: "start" });
+    headings[index].setAttribute("tabindex", "-1");
+    headings[index].focus({ preventScroll: true });
+  };
+  document.addEventListener("keydown", keyboardNavigationHandler, true);
+}
+
+function reconcileToolsPanel(state) {
+  document.getElementById("pageflow-tools-host")?.remove();
+  const wantsPanel = state.pageSearch || state.readingTime || state.contentSummary || state.glossary || state.formAccessibilityAudit || state.regionVisibilityPanel || state.keyboardNavigation || state.imageViewer;
+  if (!wantsPanel || !document.body) return;
+
+  const host = document.createElement("div");
+  host.id = "pageflow-tools-host";
+  const shadow = host.attachShadow({ mode: "open" });
+  const panel = document.createElement("aside");
+  panel.setAttribute("aria-label", "PageFlow trusted tools");
+  const heading = document.createElement("strong");
+  heading.textContent = "PageFlow tools";
+  panel.appendChild(heading);
+
+  if (state.readingTime) {
+    const text = visibleTextExcerpt(document.querySelector("article, main, [role='main']") || document.body, 20000);
+    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+    const info = document.createElement("p");
+    info.textContent = `Estimated reading time: ${Math.max(1, Math.ceil(words / 220))} min`;
+    panel.appendChild(info);
+  }
+
+  if (state.pageSearch) {
+    const body = document.createElement("div");
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Search this page";
+    input.setAttribute("aria-label", "Search this page");
+    const results = document.createElement("div");
+    input.addEventListener("input", () => {
+      results.replaceChildren();
+      const query = input.value.trim().toLowerCase();
+      if (query.length < 2) return;
+      const matches = [...document.querySelectorAll("h1, h2, h3, p, li")]
+        .filter((node) => !node.closest("[id^='pageflow-']"))
+        .filter((node) => cleanContextText(node.textContent, 600).toLowerCase().includes(query))
+        .slice(0, 12);
+      matches.forEach((node) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = cleanContextText(node.textContent, 100);
+        button.addEventListener("click", () => node.scrollIntoView({ behavior: state.reduceMotion ? "auto" : "smooth", block: "center" }));
+        results.appendChild(button);
+      });
+    });
+    body.append(input, results);
+    addToolSection(panel, "Page search", body, true);
+  }
+
+  if (state.contentSummary && state.summaryText) {
+    const summary = document.createElement("p");
+    summary.textContent = state.summaryText;
+    addToolSection(panel, "Key summary", summary);
+  }
+
+  if (state.glossary && state.glossaryItems.length) {
+    const list = document.createElement("dl");
+    state.glossaryItems.forEach((item) => {
+      const term = document.createElement("dt");
+      const definition = document.createElement("dd");
+      term.textContent = item.term;
+      definition.textContent = item.definition;
+      list.append(term, definition);
+    });
+    addToolSection(panel, "Glossary", list);
+  }
+
+  if (state.formAccessibilityAudit) {
+    const controls = Array.from(document.querySelectorAll("input:not([type='hidden']):not([type='button']):not([type='submit']), select, textarea"));
+    const issues = controls.filter((control) => !formHasAccessibleName(control));
+    issues.forEach((control) => control.dataset.pageflowFormIssue = "true");
+    const report = document.createElement("p");
+    report.textContent = issues.length ? `${issues.length} form control(s) may be missing an accessible label.` : "No unlabeled form controls were found.";
+    addToolSection(panel, "Form accessibility", report);
+  }
+
+  if (state.regionVisibilityPanel) {
+    const regions = document.createElement("div");
+    collectRegionEntries().forEach(({ label, element }) => {
+      const row = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = element.dataset.pageflowUserHidden !== "true";
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) element.removeAttribute("data-pageflow-user-hidden");
+        else element.dataset.pageflowUserHidden = "true";
+      });
+      row.append(checkbox, document.createTextNode(label));
+      regions.appendChild(row);
+    });
+    addToolSection(panel, "Visible regions", regions);
+  }
+
+  if (state.imageViewer || state.keyboardNavigation) {
+    const tips = document.createElement("p");
+    const values = [];
+    if (state.imageViewer) values.push("Alt-click an image to enlarge it.");
+    if (state.keyboardNavigation) values.push("Use Alt+Up/Down to move between headings.");
+    tips.textContent = values.join(" ");
+    panel.appendChild(tips);
+  }
+
+  const style = document.createElement("style");
+  style.textContent = `
+    :host{all:initial;position:fixed;z-index:2147483645;left:16px;bottom:16px;width:min(300px,calc(100vw - 32px));font:13px/1.45 Arial,sans-serif;color:#292631}
+    aside{box-sizing:border-box;max-height:min(68vh,560px);overflow:auto;padding:13px;border:1px solid #d9d5e8;border-radius:14px;background:rgba(255,255,255,.97);box-shadow:0 14px 38px rgba(25,18,55,.2)}
+    strong{display:block;color:#573f9d;margin-bottom:7px}details{border-top:1px solid #ebe8f1;padding:7px 0}summary{cursor:pointer;font-weight:700;color:#413856}
+    p{margin:7px 0;color:#5e5968}input[type=search]{box-sizing:border-box;width:100%;padding:7px 8px;border:1px solid #ccc5db;border-radius:7px;margin:6px 0}
+    button{display:block;width:100%;border:0;background:#f5f2ff;color:#40346c;text-align:left;padding:6px 7px;margin:3px 0;border-radius:6px;cursor:pointer}
+    dl{margin:7px 0}dt{font-weight:700;color:#4d397e}dd{margin:2px 0 8px;color:#625d6b}label{display:flex;gap:7px;align-items:center;padding:4px 0}
+  `;
+  shadow.append(style, panel);
+  document.documentElement.appendChild(host);
+}
+
+function reconcileTrustedFeatures(state) {
+  document.querySelectorAll("[data-pageflow-form-issue]").forEach((node) => node.removeAttribute("data-pageflow-form-issue"));
+  if (!state.regionVisibilityPanel) {
+    document.querySelectorAll("[data-pageflow-user-hidden]").forEach((node) => node.removeAttribute("data-pageflow-user-hidden"));
+  }
+  reconcileTranslations(state);
+  reconcileImageViewer(state.imageViewer);
+  reconcileKeyboardNavigation(state.keyboardNavigation);
+  reconcileToolsPanel(state);
+}
+
+function safeImageUrl(value) {
+  try {
+    const url = new URL(value, location.href);
+    if (["http:", "https:", "blob:"].includes(url.protocol)) return url.href;
+    if (url.protocol === "data:" && /^data:image\/(?:png|jpeg|webp|gif);/i.test(String(value))) return String(value);
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+function extractRebuildDocument(state) {
+  const root = document.querySelector("article, main, [role='main']") || document.body;
+  const allParagraphs = readableParagraphs(root);
+  const paragraphIds = new Map(allParagraphs.map((paragraph, index) => [paragraph, `p${index + 1}`]));
+  const groups = [{ heading: "", blocks: [] }];
+  const nodes = Array.from(root?.querySelectorAll("h2, h3, p, ul, ol, blockquote, table, img") || []).slice(0, 220);
+  let current = groups[0];
+
+  nodes.forEach((node) => {
+    if (node.matches("h2, h3")) {
+      const heading = cleanContextText(node.textContent, 180);
+      if (!heading) return;
+      current = { heading, blocks: [] };
+      groups.push(current);
+      return;
+    }
+    if (node.matches("p")) {
+      if (node.closest("li, blockquote, td, th")) return;
+      const text = cleanContextText(node.textContent, 1200);
+      if (text.length >= 24) current.blocks.push({ type: "paragraph", text, paragraphId: paragraphIds.get(node) || "" });
+      return;
+    }
+    if (node.matches("ul, ol")) {
+      if (node.parentElement?.closest("ul, ol")) return;
+      const items = Array.from(node.querySelectorAll(":scope > li")).slice(0, 16).map((item) => cleanContextText(item.textContent, 300)).filter(Boolean);
+      if (items.length) current.blocks.push({ type: "list", ordered: node.tagName === "OL", items });
+      return;
+    }
+    if (node.matches("blockquote")) {
+      const text = cleanContextText(node.textContent, 700);
+      if (text) current.blocks.push({ type: "quote", text });
+      return;
+    }
+    if (node.matches("table")) {
+      const rows = Array.from(node.rows || []).slice(0, 14).map((row) => Array.from(row.cells || []).slice(0, 8).map((cell) => cleanContextText(cell.textContent, 180)));
+      if (rows.length) current.blocks.push({ type: "table", rows });
+      return;
+    }
+    if (node.matches("img") && !state.hideImages) {
+      const src = safeImageUrl(node.currentSrc || node.src);
+      if (src && Number(node.naturalWidth || 0) >= 180) current.blocks.push({ type: "image", src, alt: cleanContextText(node.alt, 180) });
+    }
+  });
+
+  return {
+    title: cleanContextText(document.querySelector("h1")?.textContent || document.title, 240),
+    site: cleanContextText(location.hostname, 120),
+    groups: groups.filter((group) => group.heading || group.blocks.length).slice(0, 28)
+  };
+}
+
+function appendRebuildBlock(container, block, state, translationMap) {
+  if (block.type === "paragraph") {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = block.text;
+    container.appendChild(paragraph);
+    const translated = translationMap.get(block.paragraphId);
+    if (state.paragraphTranslation && translated) {
+      const translation = document.createElement("p");
+      translation.className = "translation";
+      translation.textContent = translated;
+      container.appendChild(translation);
+    }
+  } else if (block.type === "list") {
+    const list = document.createElement(block.ordered ? "ol" : "ul");
+    block.items.forEach((text) => {
+      const item = document.createElement("li");
+      item.textContent = text;
+      list.appendChild(item);
+    });
+    container.appendChild(list);
+  } else if (block.type === "quote") {
+    const quote = document.createElement("blockquote");
+    quote.textContent = block.text;
+    container.appendChild(quote);
+  } else if (block.type === "image") {
+    const figure = document.createElement("figure");
+    const image = document.createElement("img");
+    image.src = block.src;
+    image.alt = block.alt;
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    figure.appendChild(image);
+    container.appendChild(figure);
+  } else if (block.type === "table") {
+    const wrapper = document.createElement("div");
+    wrapper.className = "table-wrap";
+    const table = document.createElement("table");
+    block.rows.forEach((cells, rowIndex) => {
+      const row = document.createElement("tr");
+      cells.forEach((text) => {
+        const cell = document.createElement(rowIndex === 0 ? "th" : "td");
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      table.appendChild(row);
+    });
+    wrapper.appendChild(table);
+    container.appendChild(wrapper);
+  }
+}
+
+function renderRebuildView(state, preview = false) {
+  document.getElementById("pageflow-rebuild-host")?.remove();
+  if (!document.body) return;
+  const data = extractRebuildDocument(state);
+  const translationMap = new Map(state.paragraphTranslations.map((item) => [item.paragraphId, item.text]));
+  const host = document.createElement("div");
+  host.id = "pageflow-rebuild-host";
+  const shadow = host.attachShadow({ mode: "open" });
+  const shell = document.createElement("div");
+  shell.className = `shell ${state.rebuildLayout} ${state.dyslexiaMode ? "dyslexia" : ""} ${state.lowVisionMode ? "low-vision" : ""}`;
+  const toolbar = document.createElement("header");
+  toolbar.className = "toolbar";
+  const status = document.createElement("span");
+  status.textContent = preview ? "Rebuild preview — original page is unchanged" : "Rebuild view";
+  const actions = document.createElement("div");
+  const exit = document.createElement("button");
+  exit.type = "button";
+  exit.textContent = preview ? "Discard" : "Exit rebuild";
+  exit.addEventListener("click", async () => {
+    if (preview) {
+      pendingRebuildState = null;
+      host.remove();
+      return;
+    }
+    const previous = { ...currentState };
+    const next = sanitizeState({ ...currentState, viewMode: "adapt" });
+    applyState(next);
+    try {
+      await saveState(next);
+    } catch {
+      applyState(previous);
+    }
+  });
+  actions.appendChild(exit);
+  if (preview) {
+    const keep = document.createElement("button");
+    keep.type = "button";
+    keep.className = "primary";
+    keep.textContent = "Keep this view";
+    keep.addEventListener("click", async () => {
+      const previous = { ...currentState };
+      const next = sanitizeState(pendingRebuildState || state);
+      try {
+        await saveState(next);
+        aiStateHistory.push(previous);
+        if (aiStateHistory.length > 5) aiStateHistory.shift();
+        pendingRebuildState = null;
+        applyState(next);
+      } catch {
+        status.textContent = "Could not save this view.";
+      }
+    });
+    actions.appendChild(keep);
+  }
+  toolbar.append(status, actions);
+
+  const scroll = document.createElement("div");
+  scroll.className = "scroll";
+  const article = document.createElement("article");
+  const title = document.createElement("h1");
+  title.textContent = data.title;
+  const meta = document.createElement("p");
+  meta.className = "meta";
+  const wordCount = data.groups.flatMap((group) => group.blocks).filter((block) => block.text).reduce((total, block) => total + block.text.split(/\s+/).length, 0);
+  meta.textContent = `${data.site} · ${Math.max(1, Math.ceil(wordCount / 220))} min read`;
+  article.append(title, meta);
+
+  if (state.pageSearch) {
+    const search = document.createElement("input");
+    search.className = "search";
+    search.type = "search";
+    search.placeholder = "Search rebuilt page";
+    search.addEventListener("input", () => {
+      const query = search.value.trim().toLowerCase();
+      article.querySelectorAll(".group").forEach((group) => {
+        group.hidden = Boolean(query) && !group.textContent.toLowerCase().includes(query);
+      });
+    });
+    article.appendChild(search);
+  }
+
+  if (state.contentSummary && state.summaryText) {
+    const summary = document.createElement("section");
+    summary.className = "summary";
+    const heading = document.createElement("h2");
+    heading.textContent = "Key summary";
+    const paragraph = document.createElement("p");
+    paragraph.textContent = state.summaryText;
+    summary.append(heading, paragraph);
+    article.appendChild(summary);
+  }
+
+  if (state.glossary && state.glossaryItems.length) {
+    const glossary = document.createElement("details");
+    glossary.className = "glossary";
+    const heading = document.createElement("summary");
+    heading.textContent = "Glossary";
+    const list = document.createElement("dl");
+    state.glossaryItems.forEach((item) => {
+      const term = document.createElement("dt");
+      const definition = document.createElement("dd");
+      term.textContent = item.term;
+      definition.textContent = item.definition;
+      list.append(term, definition);
+    });
+    glossary.append(heading, list);
+    article.appendChild(glossary);
+  }
+
+  const content = document.createElement("main");
+  content.className = "content";
+  data.groups.forEach((groupData) => {
+    const group = document.createElement("section");
+    group.className = "group";
+    if (groupData.heading) {
+      const heading = document.createElement("h2");
+      heading.textContent = groupData.heading;
+      group.appendChild(heading);
+    }
+    groupData.blocks.forEach((block) => appendRebuildBlock(group, block, state, translationMap));
+    content.appendChild(group);
+  });
+  article.appendChild(content);
+  scroll.appendChild(article);
+  shell.append(toolbar, scroll);
+
+  if (state.imageViewer) {
+    content.querySelectorAll("img").forEach((image) => {
+      image.tabIndex = 0;
+      image.title = "Click to enlarge";
+      const openImage = () => {
+        const lightbox = document.createElement("button");
+        lightbox.type = "button";
+        lightbox.className = "lightbox";
+        lightbox.setAttribute("aria-label", "Close image viewer");
+        const previewImage = image.cloneNode();
+        lightbox.appendChild(previewImage);
+        lightbox.addEventListener("click", () => lightbox.remove());
+        shell.appendChild(lightbox);
+      };
+      image.addEventListener("click", openImage);
+      image.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") openImage();
+      });
+    });
+  }
+
+  if (state.keyboardNavigation) {
+    scroll.tabIndex = 0;
+    scroll.addEventListener("keydown", (event) => {
+      if (!event.altKey || !["ArrowDown", "ArrowUp"].includes(event.key)) return;
+      const headings = Array.from(content.querySelectorAll("h2"));
+      if (!headings.length) return;
+      event.preventDefault();
+      const currentIndex = headings.findIndex((heading) => heading.getBoundingClientRect().top > 64);
+      const index = event.key === "ArrowDown"
+        ? Math.min(headings.length - 1, currentIndex < 0 ? headings.length - 1 : currentIndex)
+        : Math.max(0, (currentIndex < 0 ? headings.length : currentIndex) - 1);
+      headings[index].scrollIntoView({ behavior: state.reduceMotion ? "auto" : "smooth", block: "start" });
+    });
+  }
+
+  if (state.tableOfContents) {
+    const toc = document.createElement("details");
+    toc.open = true;
+    toc.className = "toc";
+    const label = document.createElement("summary");
+    label.textContent = "On this page";
+    toc.appendChild(label);
+    Array.from(content.querySelectorAll(".group > h2")).slice(0, 24).forEach((heading) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = heading.textContent;
+      button.addEventListener("click", () => heading.scrollIntoView({ behavior: state.reduceMotion ? "auto" : "smooth" }));
+      toc.appendChild(button);
+    });
+    shell.appendChild(toc);
+  }
+
+  if (state.readingProgress || state.readingTime) {
+    const progress = document.createElement("span");
+    progress.className = "progress";
+    shell.appendChild(progress);
+    scroll.addEventListener("scroll", () => {
+      const total = Math.max(1, scroll.scrollHeight - scroll.clientHeight);
+      progress.style.width = `${Math.min(100, scroll.scrollTop / total * 100)}%`;
+    }, { passive: true });
+  }
+
+  if (state.backToTop) {
+    const top = document.createElement("button");
+    top.type = "button";
+    top.className = "top";
+    top.textContent = "↑";
+    top.setAttribute("aria-label", "Back to top");
+    top.addEventListener("click", () => scroll.scrollTo({ top: 0, behavior: state.reduceMotion ? "auto" : "smooth" }));
+    shell.appendChild(top);
+  }
+
+  const background = state.customBackground || "#fbfaf7";
+  const foreground = state.customText || "#25232a";
+  const accent = state.customAccent || "#6950b8";
+  const width = state.readingWidth || 820;
+  const style = document.createElement("style");
+  style.textContent = `
+    :host{all:initial;position:fixed;inset:0;z-index:2147483647;color:${foreground};background:${background};font:16px/1.72 Georgia,serif}
+    *{box-sizing:border-box}.shell{position:absolute;inset:0;background:${background};color:${foreground}}.scroll{position:absolute;inset:50px 0 0;overflow:auto}
+    .toolbar{height:50px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 16px;background:#17151d;color:#fff;font:13px Arial,sans-serif;box-shadow:0 2px 12px #0003}
+    .toolbar div{display:flex;gap:8px}.toolbar button{border:1px solid #5b5666;border-radius:8px;padding:7px 11px;background:#292630;color:#fff;cursor:pointer}.toolbar .primary{background:${accent};border-color:${accent}}
+    article{width:min(${width}px,calc(100% - 40px));margin:0 auto;padding:48px 0 90px}h1{font-size:clamp(34px,6vw,66px);line-height:1.05;letter-spacing:-.035em;margin:0 0 12px}.meta{color:color-mix(in srgb,${foreground} 62%,transparent);font:13px Arial,sans-serif;margin:0 0 30px}
+    h2{font-size:1.45em;line-height:1.2;color:${accent};margin:0 0 14px}p,li{font-size:1em}blockquote{border-inline-start:4px solid ${accent};margin:24px 0;padding:8px 18px;background:color-mix(in srgb,${accent} 8%,transparent)}
+    .content{display:grid;gap:${state.sectionGap || 28}px}.group{min-width:0}.cards .content,.magazine .content{grid-template-columns:repeat(2,minmax(0,1fr))}.cards .group{padding:24px;border:1px solid color-mix(in srgb,${accent} 25%,transparent);border-radius:${state.cornerRadius || 16}px;background:color-mix(in srgb,${background} 94%,${accent})}.magazine .group:first-child{grid-column:1/-1}
+    figure{margin:24px 0}img{max-width:100%;height:auto;border-radius:${state.cornerRadius || 12}px}.lightbox{position:fixed;inset:0;z-index:8;display:grid;place-items:center;width:100%;height:100%;border:0;background:#08090dee;padding:24px;cursor:zoom-out}.lightbox img{max-width:94vw;max-height:90vh;object-fit:contain;box-shadow:0 20px 70px #000}.table-wrap{max-width:100%;overflow:auto}table{border-collapse:collapse;width:100%;font:14px Arial,sans-serif}th,td{border:1px solid color-mix(in srgb,${foreground} 22%,transparent);padding:9px;text-align:start}
+    .summary,.glossary{padding:18px 20px;margin:24px 0;border-radius:12px;background:color-mix(in srgb,${accent} 10%,${background})}.summary h2{font-size:1.05em}.glossary summary{cursor:pointer;font-weight:700}.glossary dt{font-weight:700;color:${accent}}.glossary dd{margin:3px 0 12px}.translation{font-family:Arial,sans-serif;font-size:.9em;padding:.7em;border-inline-start:3px solid ${accent};background:color-mix(in srgb,${accent} 8%,transparent)}
+    .search{width:100%;padding:11px 13px;margin:4px 0 20px;border:1px solid color-mix(in srgb,${foreground} 25%,transparent);border-radius:9px;background:${background};color:${foreground}}
+    .toc{position:fixed;right:18px;top:72px;width:220px;max-height:55vh;overflow:auto;padding:12px;border:1px solid color-mix(in srgb,${accent} 25%,transparent);border-radius:12px;background:color-mix(in srgb,${background} 96%,${accent});box-shadow:0 12px 36px #0002;font:12px Arial,sans-serif}.toc summary{font-weight:700;margin-bottom:6px;cursor:pointer}.toc button{display:block;width:100%;border:0;background:transparent;color:${foreground};padding:5px;text-align:start;cursor:pointer}
+    .progress{position:fixed;top:50px;left:0;height:4px;width:0;background:${accent};z-index:3}.top{position:fixed;right:22px;bottom:22px;width:44px;height:44px;border:0;border-radius:50%;background:${accent};color:#fff;font-size:22px;cursor:pointer}
+    .dyslexia{font-family:"Atkinson Hyperlegible",Verdana,Arial,sans-serif;letter-spacing:.045em;word-spacing:.1em}.low-vision{font-size:20px}.low-vision :focus-visible{outline:4px solid ${accent};outline-offset:3px}
+    @media(max-width:1000px){.toc{display:none}}@media(max-width:760px){.cards .content,.magazine .content{grid-template-columns:1fr}article{width:min(100% - 28px,${width}px);padding-top:30px}.toolbar span{max-width:55%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+  `;
+  shadow.append(style, shell);
+  document.documentElement.appendChild(host);
+}
+
 function reconcileBuiltInFeatures(state) {
+  if (state.viewMode === "rebuild") {
+    reconcileTableOfContents(false);
+    reconcileReadingProgress(false);
+    reconcileBackToTop(false);
+    clearFeatureArtifacts();
+    renderRebuildView(state, false);
+    return;
+  }
+
+  if (!pendingRebuildState) document.getElementById("pageflow-rebuild-host")?.remove();
   reconcileTableOfContents(state.tableOfContents);
-  reconcileReadingProgress(state.readingProgress);
+  reconcileReadingProgress(state.readingProgress || state.readingTime);
   reconcileBackToTop(state.backToTop);
+  reconcileTrustedFeatures(state);
 }
 
 function applyState(nextState) {
   currentState = sanitizeState(nextState);
   ensureStyles();
 
+  const pageState = currentState.viewMode === "adapt" ? currentState : DEFAULT_STATE;
   const root = document.documentElement;
   const classes = [
     "pageflow-font-size",
@@ -452,57 +1195,65 @@ function applyState(nextState) {
     "pageflow-layout-reading",
     "pageflow-layout-cards",
     "pageflow-layout-workspace",
-    "pageflow-highlight-headings"
+    "pageflow-highlight-headings",
+    "pageflow-hide-videos",
+    "pageflow-simple-tables",
+    "pageflow-dyslexia",
+    "pageflow-low-vision"
   ];
   root.classList.remove(...classes);
 
-  root.classList.toggle("pageflow-font-size", currentState.fontScale !== DEFAULT_STATE.fontScale);
-  root.classList.toggle("pageflow-line-height", currentState.lineHeight !== DEFAULT_STATE.lineHeight);
-  root.classList.toggle("pageflow-filter", themeFilter(currentState) !== "none");
-  root.classList.toggle("pageflow-warm", currentState.theme === "warm");
-  root.classList.toggle("pageflow-readable-font", currentState.readableFont);
-  root.classList.toggle("pageflow-underlined-links", currentState.underlineLinks);
-  root.classList.toggle("pageflow-hide-images", currentState.hideImages);
-  root.classList.toggle("pageflow-grayscale-images", currentState.grayscaleImages);
-  root.classList.toggle("pageflow-reduce-motion", currentState.reduceMotion);
-  root.classList.toggle("pageflow-focus", currentState.focusMode);
-  root.classList.toggle("pageflow-reading-width", currentState.readingWidth > 0);
-  root.classList.toggle("pageflow-sidebar-hide", currentState.sidebarMode === "hide");
-  root.classList.toggle("pageflow-sidebar-dim", currentState.sidebarMode === "dim");
-  root.classList.toggle("pageflow-navigation-hide", currentState.navigationMode === "hide");
-  root.classList.toggle("pageflow-navigation-dim", currentState.navigationMode === "dim");
-  root.classList.toggle("pageflow-navigation-compact", currentState.navigationMode === "compact");
-  root.classList.toggle("pageflow-header-hide", currentState.headerMode === "hide");
-  root.classList.toggle("pageflow-header-compact", currentState.headerMode === "compact");
-  root.classList.toggle("pageflow-footer-hide", currentState.footerMode === "hide");
-  root.classList.toggle("pageflow-paragraph-spacing", currentState.paragraphSpacing > 0);
-  root.classList.toggle("pageflow-page-padding", currentState.pagePadding > 0);
-  root.classList.toggle("pageflow-custom-background", Boolean(currentState.customBackground));
-  root.classList.toggle("pageflow-custom-text", Boolean(currentState.customText));
-  root.classList.toggle("pageflow-custom-accent", Boolean(currentState.customAccent));
-  root.classList.toggle("pageflow-font-sans", currentState.fontStyle === "sans");
-  root.classList.toggle("pageflow-font-serif", currentState.fontStyle === "serif");
-  root.classList.toggle("pageflow-font-mono", currentState.fontStyle === "mono");
-  root.classList.toggle("pageflow-text-left", currentState.textAlign === "left");
-  root.classList.toggle("pageflow-text-center", currentState.textAlign === "center");
-  root.classList.toggle("pageflow-text-justify", currentState.textAlign === "justify");
-  root.classList.toggle("pageflow-layout-reading", currentState.layoutPreset === "reading");
-  root.classList.toggle("pageflow-layout-cards", currentState.layoutPreset === "cards");
-  root.classList.toggle("pageflow-layout-workspace", currentState.layoutPreset === "workspace");
-  root.classList.toggle("pageflow-highlight-headings", currentState.highlightHeadings);
+  root.classList.toggle("pageflow-font-size", pageState.fontScale !== DEFAULT_STATE.fontScale);
+  root.classList.toggle("pageflow-line-height", pageState.lineHeight !== DEFAULT_STATE.lineHeight);
+  root.classList.toggle("pageflow-filter", themeFilter(pageState) !== "none");
+  root.classList.toggle("pageflow-warm", pageState.theme === "warm");
+  root.classList.toggle("pageflow-readable-font", pageState.readableFont);
+  root.classList.toggle("pageflow-underlined-links", pageState.underlineLinks);
+  root.classList.toggle("pageflow-hide-images", pageState.hideImages);
+  root.classList.toggle("pageflow-grayscale-images", pageState.grayscaleImages);
+  root.classList.toggle("pageflow-reduce-motion", pageState.reduceMotion);
+  root.classList.toggle("pageflow-focus", pageState.focusMode);
+  root.classList.toggle("pageflow-reading-width", pageState.readingWidth > 0);
+  root.classList.toggle("pageflow-sidebar-hide", pageState.sidebarMode === "hide");
+  root.classList.toggle("pageflow-sidebar-dim", pageState.sidebarMode === "dim");
+  root.classList.toggle("pageflow-navigation-hide", pageState.navigationMode === "hide");
+  root.classList.toggle("pageflow-navigation-dim", pageState.navigationMode === "dim");
+  root.classList.toggle("pageflow-navigation-compact", pageState.navigationMode === "compact");
+  root.classList.toggle("pageflow-header-hide", pageState.headerMode === "hide");
+  root.classList.toggle("pageflow-header-compact", pageState.headerMode === "compact");
+  root.classList.toggle("pageflow-footer-hide", pageState.footerMode === "hide");
+  root.classList.toggle("pageflow-paragraph-spacing", pageState.paragraphSpacing > 0);
+  root.classList.toggle("pageflow-page-padding", pageState.pagePadding > 0);
+  root.classList.toggle("pageflow-custom-background", Boolean(pageState.customBackground));
+  root.classList.toggle("pageflow-custom-text", Boolean(pageState.customText));
+  root.classList.toggle("pageflow-custom-accent", Boolean(pageState.customAccent));
+  root.classList.toggle("pageflow-font-sans", pageState.fontStyle === "sans");
+  root.classList.toggle("pageflow-font-serif", pageState.fontStyle === "serif");
+  root.classList.toggle("pageflow-font-mono", pageState.fontStyle === "mono");
+  root.classList.toggle("pageflow-text-left", pageState.textAlign === "left");
+  root.classList.toggle("pageflow-text-center", pageState.textAlign === "center");
+  root.classList.toggle("pageflow-text-justify", pageState.textAlign === "justify");
+  root.classList.toggle("pageflow-layout-reading", pageState.layoutPreset === "reading");
+  root.classList.toggle("pageflow-layout-cards", pageState.layoutPreset === "cards");
+  root.classList.toggle("pageflow-layout-workspace", pageState.layoutPreset === "workspace");
+  root.classList.toggle("pageflow-highlight-headings", pageState.highlightHeadings);
+  root.classList.toggle("pageflow-hide-videos", pageState.hideVideos);
+  root.classList.toggle("pageflow-simple-tables", pageState.simplifyTables);
+  root.classList.toggle("pageflow-dyslexia", pageState.dyslexiaMode);
+  root.classList.toggle("pageflow-low-vision", pageState.lowVisionMode);
 
-  root.style.setProperty("--pageflow-font-scale", `${currentState.fontScale}%`);
-  root.style.setProperty("--pageflow-line-height", String(currentState.lineHeight));
-  root.style.setProperty("--pageflow-filter", themeFilter(currentState));
-  root.style.setProperty("--pageflow-reading-width", `${currentState.readingWidth}px`);
-  root.style.setProperty("--pageflow-paragraph-spacing", `${currentState.paragraphSpacing}px`);
-  root.style.setProperty("--pageflow-page-padding", `${currentState.pagePadding}px`);
-  root.style.setProperty("--pageflow-background", currentState.customBackground || "#ffffff");
-  root.style.setProperty("--pageflow-text", currentState.customText || "#1f2430");
-  root.style.setProperty("--pageflow-accent", currentState.customAccent || "#7254ec");
-  root.style.setProperty("--pageflow-layout-width", `${currentState.readingWidth || 760}px`);
-  root.style.setProperty("--pageflow-section-gap", `${currentState.sectionGap || 20}px`);
-  root.style.setProperty("--pageflow-corner-radius", `${currentState.cornerRadius || 14}px`);
+  root.style.setProperty("--pageflow-font-scale", `${pageState.fontScale}%`);
+  root.style.setProperty("--pageflow-line-height", String(pageState.lineHeight));
+  root.style.setProperty("--pageflow-filter", themeFilter(pageState));
+  root.style.setProperty("--pageflow-reading-width", `${pageState.readingWidth}px`);
+  root.style.setProperty("--pageflow-paragraph-spacing", `${pageState.paragraphSpacing}px`);
+  root.style.setProperty("--pageflow-page-padding", `${pageState.pagePadding}px`);
+  root.style.setProperty("--pageflow-background", pageState.customBackground || "#ffffff");
+  root.style.setProperty("--pageflow-text", pageState.customText || "#1f2430");
+  root.style.setProperty("--pageflow-accent", pageState.customAccent || "#7254ec");
+  root.style.setProperty("--pageflow-layout-width", `${pageState.readingWidth || 760}px`);
+  root.style.setProperty("--pageflow-section-gap", `${pageState.sectionGap || 20}px`);
+  root.style.setProperty("--pageflow-corner-radius", `${pageState.cornerRadius || 14}px`);
 
   reconcileBuiltInFeatures(currentState);
 }
@@ -596,6 +1347,12 @@ function getPageContext() {
     .slice(0, 14)
     .map((heading) => cleanContextText(heading.innerText, 160))
     .filter(Boolean);
+  const paragraphs = readableParagraphs(primaryContent)
+    .slice(0, 32)
+    .map((paragraph, index) => ({
+      id: `p${index + 1}`,
+      text: cleanContextText(paragraph.textContent, 520)
+    }));
 
   return {
     page: {
@@ -626,7 +1383,13 @@ function getPageContext() {
       footer: regionSummary("footer")
     },
     headings,
+    paragraphs,
     sections: sectionSummaries(),
+    availableFeatures: Object.entries(FEATURE_REGISTRY).map(([id, definition]) => ({
+      id,
+      label: definition.label,
+      modes: definition.modes
+    })),
     visibleTextExcerpt: visibleTextExcerpt(primaryContent, 2600),
     appearance: bodyStyle ? {
       backgroundColor: cleanContextText(bodyStyle.backgroundColor, 60),
@@ -681,48 +1444,93 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return;
   }
 
+  if (message?.type === "PAGEFLOW_GET_FEATURES") {
+    sendResponse({
+      ok: true,
+      features: Object.entries(FEATURE_REGISTRY).map(([id, definition]) => ({ id, ...definition }))
+    });
+    return;
+  }
+
+  if (message?.type === "PAGEFLOW_PREVIEW_REBUILD") {
+    try {
+      pendingRebuildState = sanitizeState({ ...currentState, ...message.patch, viewMode: "rebuild" });
+      renderRebuildView(pendingRebuildState, true);
+      sendResponse({ ok: true, state: pendingRebuildState });
+    } catch (error) {
+      pendingRebuildState = null;
+      sendResponse({ ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (message?.type === "PAGEFLOW_CANCEL_REBUILD_PREVIEW") {
+    if (pendingRebuildState) document.getElementById("pageflow-rebuild-host")?.remove();
+    pendingRebuildState = null;
+    sendResponse({ ok: true });
+    return;
+  }
+
   if (message?.type === "PAGEFLOW_SET_STATE") {
-    aiStateHistory.length = 0;
+    const previousState = { ...currentState };
     const nextState = sanitizeState({ ...currentState, ...message.patch });
-    applyState(nextState);
     saveState(nextState)
-      .then(() => sendResponse({ ok: true, state: nextState, canUndo: false }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+      .then(() => {
+        aiStateHistory.length = 0;
+        pendingRebuildState = null;
+        applyState(nextState);
+        sendResponse({ ok: true, state: nextState, canUndo: false });
+      })
+      .catch((error) => {
+        applyState(previousState);
+        sendResponse({ ok: false, error: error.message });
+      });
     return true;
   }
 
   if (message?.type === "PAGEFLOW_APPLY_AI_PLAN") {
+    const previousState = { ...currentState };
     const nextState = sanitizeState({ ...currentState, ...message.patch });
-    aiStateHistory.push({ ...currentState });
-    if (aiStateHistory.length > 5) aiStateHistory.shift();
-    applyState(nextState);
     saveState(nextState)
-      .then(() => sendResponse({ ok: true, state: nextState, canUndo: true }))
+      .then(() => {
+        aiStateHistory.push(previousState);
+        if (aiStateHistory.length > 5) aiStateHistory.shift();
+        pendingRebuildState = null;
+        applyState(nextState);
+        sendResponse({ ok: true, state: nextState, canUndo: true });
+      })
       .catch((error) => {
-        aiStateHistory.pop();
+        applyState(previousState);
         sendResponse({ ok: false, error: error.message });
       });
     return true;
   }
 
   if (message?.type === "PAGEFLOW_UNDO_AI_PLAN") {
-    const previousState = aiStateHistory.pop();
+    const previousState = aiStateHistory[aiStateHistory.length - 1];
     if (!previousState) {
       sendResponse({ ok: false, error: "There is no AI change to undo." });
       return;
     }
-    applyState(previousState);
     saveState(previousState)
-      .then(() => sendResponse({ ok: true, state: previousState, canUndo: aiStateHistory.length > 0 }))
+      .then(() => {
+        aiStateHistory.pop();
+        pendingRebuildState = null;
+        applyState(previousState);
+        sendResponse({ ok: true, state: previousState, canUndo: aiStateHistory.length > 0 });
+      })
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 
   if (message?.type === "PAGEFLOW_RESET") {
-    aiStateHistory.length = 0;
-    applyState(DEFAULT_STATE);
     saveState(DEFAULT_STATE)
-      .then(() => sendResponse({ ok: true, state: { ...DEFAULT_STATE } }))
+      .then(() => {
+        aiStateHistory.length = 0;
+        pendingRebuildState = null;
+        applyState(DEFAULT_STATE);
+        sendResponse({ ok: true, state: { ...DEFAULT_STATE } });
+      })
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

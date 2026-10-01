@@ -17,7 +17,7 @@ PageFlow AI is a Chrome and Edge extension that helps users improve webpage appe
 
 ## 3. Current baseline
 
-The current `1.3.0` development version provides:
+The current `1.4.0` development version provides:
 
 - Original, Warm, and Contrast themes
 - image hiding and grayscale images
@@ -32,6 +32,11 @@ The current `1.3.0` development version provides:
 - custom colors, typography, alignment, spacing, and corner radius
 - trusted Table of Contents, Reading Progress, Back to Top, and heading-highlight features
 - AI proposal review with Apply, Dismiss, and session Undo
+- Adapt and isolated Rebuild Preview modes
+- Reading, Magazine, and Cards rebuild layouts
+- a trusted feature registry covering navigation, content aids, media, accessibility, audits, and region controls
+- strict boolean/range validation, transactional state persistence, and a 30-second AI request timeout
+- dependency-free automated schema and Claude-adapter tests
 
 Current AI request flow:
 
@@ -44,7 +49,8 @@ Popup prompt
     -> content-script.js validation
     -> popup review
     -> content-script.js validation
-    -> webpage styles and trusted built-in features
+    -> Adapt renderer or isolated Rebuild preview
+    -> Keep or Discard confirmation
 ```
 
 When no API endpoint is configured, the prompt field uses local keyword rules instead of GenAI.
@@ -85,6 +91,8 @@ When no API endpoint is configured, the prompt field uses local keyword rules in
 - Explicit page-summary sharing controls
 - Request limits and abuse protection
 - Additional reviewed built-in feature modules
+- persistent cross-navigation undo history
+- deeper SPA and Shadow DOM page modeling
 
 ### Out of scope until reviewed
 
@@ -209,7 +217,9 @@ Status: Current
 - [x] Add proposal Review, Apply, Dismiss, and Undo.
 - [x] Add declarative layouts, custom colors, typography, spacing, and trusted feature flags.
 - [ ] Add clearer connection diagnostics.
-- [ ] Test malformed and partial AI responses.
+- [x] Add strict boolean, range, feature-content, and schema-parity tests.
+- [x] Add a request timeout and transactional state writes.
+- [ ] Add browser-level tests for malformed, partial, and delayed AI responses.
 
 ### Phase 3 — Secure AI integration
 
@@ -220,6 +230,7 @@ Status: Planned
 - [ ] Add explicit user controls for page-summary sharing.
 - [ ] Add multi-turn conversation history.
 - [x] Add Apply, Dismiss, and Undo actions.
+- [x] Add an isolated Rebuild Preview confirmation flow.
 - [ ] Add backend authentication and rate limiting.
 
 ### Phase 4 — Advanced customization
@@ -232,8 +243,11 @@ Status: Planned
 - [x] Add corner-radius settings.
 - [x] Add safe Reading, Cards, and Workspace presets.
 - [x] Add trusted navigation and reading feature modules.
-- [ ] Add video visibility.
-- [ ] Evaluate Study and Low Vision presets.
+- [x] Add page search, summary, glossary, and paragraph-translation modules.
+- [x] Add simplified tables, image viewer, and video visibility.
+- [x] Add Dyslexia-friendly, Low Vision, keyboard navigation, form audit, and region visibility modules.
+- [x] Add Reading, Magazine, and Cards rebuild layouts.
+- [ ] Evaluate a dedicated Study preset.
 - [ ] Add localized natural-language support.
 
 ### Phase 5 — Release readiness

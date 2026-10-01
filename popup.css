@@ -54,6 +54,12 @@ section { margin-bottom: 16px; }
   box-shadow: 0 10px 28px rgba(0, 0, 0, .13);
 }
 .ai-card { border-color: #40385d; background: linear-gradient(140deg, rgba(49, 42, 72, .93), rgba(31, 32, 40, .92)); }
+.mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 9px; }
+.mode-switch button { display: grid; gap: 2px; border: 1px solid #47434f; border-radius: 9px; padding: 7px 8px; background: #1c1d24; color: #9b9da7; text-align: left; cursor: pointer; }
+.mode-switch button.active { border-color: #8973e8; background: #302a48; color: #f1edff; }
+.mode-switch b { font-size: 9px; }
+.mode-switch small { font-size: 7px; color: #777985; }
+.mode-switch button.active small { color: #aea1e5; }
 .prompt-row { display: flex; align-items: stretch; gap: 8px; }
 textarea {
   flex: 1; resize: none; border: 1px solid #47434f; border-radius: 10px; background: #191a21; color: #f1f1f5;

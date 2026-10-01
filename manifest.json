@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PageFlow AI",
-  "version": "1.3.0",
-  "description": "Create reviewable, page-aware layouts, colors, accessibility changes, and trusted built-in features with Claude or OpenAI-compatible AI.",
+  "version": "1.4.0",
+  "description": "Adapt existing pages or preview isolated AI-rebuilt reading views with a registry of trusted accessibility and reading tools.",
   "permissions": ["storage", "activeTab"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {

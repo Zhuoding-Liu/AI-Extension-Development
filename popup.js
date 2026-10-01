@@ -28,13 +28,32 @@ const DEFAULT_STATE = {
   tableOfContents: false,
   readingProgress: false,
   backToTop: false,
-  highlightHeadings: false
+  highlightHeadings: false,
+  viewMode: "adapt",
+  rebuildLayout: "reading",
+  pageSearch: false,
+  readingTime: false,
+  contentSummary: false,
+  glossary: false,
+  paragraphTranslation: false,
+  simplifyTables: false,
+  imageViewer: false,
+  hideVideos: false,
+  dyslexiaMode: false,
+  lowVisionMode: false,
+  keyboardNavigation: false,
+  formAccessibilityAudit: false,
+  regionVisibilityPanel: false,
+  summaryText: "",
+  glossaryItems: [],
+  paragraphTranslations: []
 };
 
 let activeTabId = null;
 let currentState = { ...DEFAULT_STATE };
 let updateTimer = null;
 let pendingPlan = null;
+let requestedMode = "adapt";
 
 const FIELD_LABELS = {
   theme: "Color theme", hideImages: "Images", grayscaleImages: "Image color",
@@ -47,7 +66,14 @@ const FIELD_LABELS = {
   customText: "Text color", customAccent: "Accent color", fontStyle: "Font style",
   textAlign: "Text alignment", sectionGap: "Section gap", cornerRadius: "Corner radius",
   tableOfContents: "Table of contents", readingProgress: "Reading progress",
-  backToTop: "Back to top", highlightHeadings: "Heading highlights"
+  backToTop: "Back to top", highlightHeadings: "Heading highlights",
+  viewMode: "Mode", rebuildLayout: "Rebuild layout", pageSearch: "Page search",
+  readingTime: "Reading time", contentSummary: "Key summary", glossary: "Glossary",
+  paragraphTranslation: "Paragraph translation", simplifyTables: "Simplified tables",
+  imageViewer: "Image viewer", hideVideos: "Hide videos", dyslexiaMode: "Dyslexia-friendly mode",
+  lowVisionMode: "Low Vision mode", keyboardNavigation: "Keyboard navigation",
+  formAccessibilityAudit: "Form accessibility audit", regionVisibilityPanel: "Region visibility panel",
+  summaryText: "Summary content", glossaryItems: "Glossary content", paragraphTranslations: "Translations"
 };
 
 const siteName = document.getElementById("siteName");
@@ -73,7 +99,9 @@ function formatValue(key, value) {
 function describePlanValue(value) {
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "") return "Original";
-  return String(value);
+  if (Array.isArray(value)) return `${value.length} item(s)`;
+  const text = String(value);
+  return text.length > 90 ? `${text.slice(0, 87)}…` : text;
 }
 
 function filterPlanSettings(settings) {
@@ -101,13 +129,35 @@ function showPlan(plan) {
     return item;
   }));
   aiPlan.hidden = false;
-  setStatus("Review the AI design before applying it.");
+  document.getElementById("applyAi").textContent = settings.viewMode === "rebuild" ? "Preview page" : "Apply changes";
+  setStatus(settings.viewMode === "rebuild"
+    ? "Review the plan, then open the isolated preview."
+    : "Review the AI design before applying it.");
 }
 
 function render(state) {
   currentState = { ...DEFAULT_STATE, ...state };
+  requestedMode = currentState.viewMode === "rebuild" ? "rebuild" : requestedMode;
+  document.querySelectorAll("[data-ai-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.aiMode === requestedMode);
+    button.setAttribute("aria-pressed", String(button.dataset.aiMode === requestedMode));
+  });
 
-  document.querySelectorAll("[data-theme]").forEach((button) => {
+  document.querySelectorAll("[data-ai-mode]").forEach((button) => {
+  button.addEventListener("click", () => {
+    requestedMode = button.dataset.aiMode === "rebuild" ? "rebuild" : "adapt";
+    document.querySelectorAll("[data-ai-mode]").forEach((item) => {
+      item.classList.toggle("active", item === button);
+      item.setAttribute("aria-pressed", String(item === button));
+    });
+    hidePlan();
+    setStatus(requestedMode === "rebuild"
+      ? "Rebuild will open an isolated preview before it is saved."
+      : "Adapt modifies the existing page after review.");
+  });
+});
+
+document.querySelectorAll("[data-theme]").forEach((button) => {
     button.classList.toggle("active", button.dataset.theme === currentState.theme);
   });
 
@@ -176,6 +226,18 @@ function localPromptToPatch(text) {
   if (has("highlight headings")) patch.highlightHeadings = true;
   if (has("serif font")) patch.fontStyle = "serif";
   if (has("monospace font", "mono font")) patch.fontStyle = "mono";
+  if (has("magazine layout")) patch.rebuildLayout = "magazine";
+  if (has("rebuild cards", "card reading view")) patch.rebuildLayout = "cards";
+  if (has("page search", "search tool")) patch.pageSearch = true;
+  if (has("reading time")) patch.readingTime = true;
+  if (has("simplify tables", "simple tables")) patch.simplifyTables = true;
+  if (has("image viewer", "enlarge images")) patch.imageViewer = true;
+  if (has("hide videos", "no videos")) patch.hideVideos = true;
+  if (has("dyslexia", "dyslexia-friendly")) patch.dyslexiaMode = true;
+  if (has("low vision")) patch.lowVisionMode = true;
+  if (has("keyboard navigation")) patch.keyboardNavigation = true;
+  if (has("form accessibility", "audit forms")) patch.formAccessibilityAudit = true;
+  if (has("region panel", "show hide regions")) patch.regionVisibilityPanel = true;
 
   if (has("larger text", "bigger text", "increase font")) patch.fontScale = Math.min(160, currentState.fontScale + 20);
   if (has("smaller text", "decrease font")) patch.fontScale = Math.max(80, currentState.fontScale - 15);
@@ -209,21 +271,29 @@ async function runSmartPrompt() {
       type: "PAGEFLOW_AI_REQUEST",
       prompt: text,
       currentState,
-      pageContext
+      pageContext,
+      requestedMode
     });
     if (!response?.ok) throw new Error(response?.error || "The AI request failed.");
 
     if (response.configured) {
-      const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch: response.plan?.settings });
+      const proposedSettings = { ...(response.plan?.settings || {}), viewMode: requestedMode };
+      if (requestedMode === "rebuild" && !proposedSettings.rebuildLayout) proposedSettings.rebuildLayout = "reading";
+      const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch: proposedSettings });
       if (!validation?.ok) throw new Error(validation?.error || "The AI design could not be validated.");
       showPlan({ ...response.plan, settings: validation.patch });
       document.getElementById("aiMode").textContent = response.provider === "anthropic" ? "Claude connected" : "AI connected";
     } else {
-      const patch = localPromptToPatch(text);
-      if (!Object.keys(patch).length) {
-        throw new Error('Try a request such as "larger text and hide images."');
+      const patch = { ...localPromptToPatch(text), viewMode: requestedMode };
+      if (requestedMode === "rebuild") {
+        const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch });
+        showPlan({ summary: "A local rebuild preview using trusted PageFlow features.", settings: validation.patch });
+      } else {
+        if (Object.keys(patch).length === 1) {
+          throw new Error('Try a request such as "larger text and hide images."');
+        }
+        await applyPatch(patch);
       }
-      await applyPatch(patch);
       document.getElementById("aiMode").textContent = "Local rules";
     }
     prompt.value = "";
@@ -254,6 +324,13 @@ document.querySelectorAll("input[data-key]").forEach((input) => {
 document.getElementById("applyAi").addEventListener("click", async () => {
   if (!pendingPlan) return;
   try {
+    if (pendingPlan.settings.viewMode === "rebuild") {
+      const response = await sendToPage({ type: "PAGEFLOW_PREVIEW_REBUILD", patch: pendingPlan.settings });
+      if (!response?.ok) throw new Error(response?.error || "Unable to open the rebuild preview.");
+      hidePlan();
+      setStatus('Preview opened on the page. Choose "Keep this view" or "Discard" there.');
+      return;
+    }
     const response = await sendToPage({ type: "PAGEFLOW_APPLY_AI_PLAN", patch: pendingPlan.settings });
     if (!response?.ok) throw new Error(response?.error || "Unable to apply the AI design.");
     render(response.state);

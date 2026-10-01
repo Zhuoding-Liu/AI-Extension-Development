@@ -2,7 +2,7 @@
 
 PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.3.0`
+Version: `1.4.0`
 
 ## Features
 
@@ -20,6 +20,9 @@ Version: `1.3.0`
 - AI-selectable custom background, text, and accent colors, font style, alignment, spacing, and corner radius
 - Trusted built-in Table of Contents, Reading Progress, Back to Top, and heading-highlight features
 - Review, Apply, Dismiss, and Undo controls for AI proposals
+- Adapt mode for controlled changes to the existing page
+- Rebuild Preview mode that renders a sanitized reading view inside an isolated Shadow DOM without replacing the source page
+- A trusted Feature Registry for search, reading time, summaries, glossary explanations, paragraph translations, simplified tables, image viewing, video hiding, accessibility modes, keyboard navigation, form audits, and region visibility
 
 The Dark theme is not included in this version.
 
@@ -55,6 +58,34 @@ Use a narrow reading width.
 ```
 
 When no API endpoint is configured, the popup displays **Local rules**. These commands are matched against built-in keywords and do not contact a GenAI service.
+
+## Choose a page mode
+
+- **Adapt** applies validated style and trusted-feature settings to the existing page after review.
+- **Rebuild preview** extracts safe text, headings, lists, tables, and selected images into an isolated reading view. The source DOM remains in place. Use **Keep this view** inside the preview to save it, or **Discard** to return without saving.
+
+Rebuild supports Reading, Magazine, and Cards layouts. It never copies scripts, event handlers, forms, or arbitrary page HTML.
+
+Example request:
+
+```text
+Rebuild this article as a magazine layout. Add search, a collapsible contents panel,
+reading time, a short summary, glossary explanations, and paragraph translations.
+```
+
+## Trusted Feature Registry
+
+AI can enable only registered features implemented by the extension:
+
+- collapsible table of contents, page search, reading time/progress, and back to top
+- grounded summary text, glossary items, and paragraph translations
+- simplified tables, Alt-click image viewer, and video hiding
+- Dyslexia-friendly and Low Vision presentation modes
+- Alt+Up/Down heading navigation
+- missing-form-label audit
+- semantic-region visibility controls
+
+Generated summary, glossary, and translation data is accepted only as length-limited plain text.
 
 ## Connect a GenAI service
 
@@ -143,6 +174,12 @@ The GenAI service can return only the following page settings:
 | `readingProgress` | boolean | trusted built-in feature |
 | `backToTop` | boolean | trusted built-in feature |
 | `highlightHeadings` | boolean | `true` or `false` |
+| `viewMode` | string | `adapt`, `rebuild` |
+| `rebuildLayout` | string | `reading`, `magazine`, `cards` |
+| Trusted feature flags | boolean | search, reading tools, content aids, media, accessibility, keyboard, audit, and region tools |
+| `summaryText` | string | plain text, maximum 1200 characters |
+| `glossaryItems` | array | maximum 16 validated term/definition objects |
+| `paragraphTranslations` | array | maximum 24 validated paragraph-ID/text objects |
 
 AI output is sanitized by `content-script.js` before it is displayed for review and again when it is applied.
 
@@ -167,10 +204,11 @@ Prompt field
     -> content-script.js validation
     -> popup review (Apply or Dismiss)
     -> content-script.js validation
-    -> webpage styles and trusted built-in features
+    -> Adapt renderer OR isolated Rebuild preview
+    -> Keep/Discard confirmation for Rebuild
 ```
 
-The extension sends the user's request, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, a limited visible-text excerpt, and basic computed appearance. Context is capped before it is sent. It never sends complete page HTML, form values, cookies, local storage, query strings, or URL fragments.
+The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, up to 32 numbered paragraph excerpts, a limited visible-text excerpt, registered feature metadata, and basic computed appearance. Context is capped before it is sent. It never sends complete page HTML, form values, cookies, local storage, query strings, or URL fragments.
 
 The model is instructed to return a JSON object. A typical response looks like:
 
@@ -178,13 +216,17 @@ The model is instructed to return a JSON object. A typical response looks like:
 {
   "summary": "A focused reading layout with gentle colors and navigation aids.",
   "settings": {
-    "layoutPreset": "reading",
+    "viewMode": "rebuild",
+    "rebuildLayout": "reading",
     "customBackground": "#fffaf0",
     "customText": "#2f2a24",
     "customAccent": "#7556b8",
     "fontScale": 115,
     "tableOfContents": true,
-    "readingProgress": true
+    "pageSearch": true,
+    "readingTime": true,
+    "contentSummary": true,
+    "summaryText": "A concise summary grounded in the supplied page context."
   }
 }
 ```
@@ -244,6 +286,17 @@ The model response was not valid JSON in the format expected by `service-worker.
 - `PLANNING.md`: product roadmap, architecture, testing, and release plan
 - `icons/`: extension icons
 - `scripts/`: development utilities
+- `tests/`: dependency-free state-schema and provider-adapter tests
+- `package.json`: repeatable `npm test` and `npm run check` commands
+
+## Development checks
+
+```text
+npm test
+npm run check
+```
+
+The checks validate strict state handling, trusted feature content, popup/content schema parity, Claude request shape, JavaScript syntax, and timeout wiring.
 
 ## Development roadmap
 
