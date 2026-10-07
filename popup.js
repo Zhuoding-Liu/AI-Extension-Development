@@ -48,7 +48,8 @@ const DEFAULT_STATE = {
   glossaryItems: [],
   paragraphTranslations: [],
   generatedHtml: "",
-  generatedCss: ""
+  generatedCss: "",
+  generatedPagePath: ""
 };
 
 let activeTabId = null;
@@ -76,7 +77,7 @@ const FIELD_LABELS = {
   lowVisionMode: "Low Vision mode", keyboardNavigation: "Keyboard navigation",
   formAccessibilityAudit: "Form accessibility audit", regionVisibilityPanel: "Region visibility panel",
   summaryText: "Summary content", glossaryItems: "Glossary content", paragraphTranslations: "Translations",
-  generatedHtml: "Generated HTML", generatedCss: "Generated CSS"
+  generatedHtml: "Generated HTML", generatedCss: "Generated CSS", generatedPagePath: "Designed page"
 };
 
 const siteName = document.getElementById("siteName");
@@ -141,9 +142,9 @@ function showPlan(plan) {
 
 function render(state) {
   currentState = { ...DEFAULT_STATE, ...state };
-  if (currentState.viewMode === "rebuild") {
-    requestedMode = currentState.rebuildLayout === "custom" ? "custom" : "rebuild";
-  }
+  requestedMode = currentState.viewMode === "rebuild"
+    ? currentState.rebuildLayout === "custom" ? "custom" : "rebuild"
+    : "adapt";
   document.querySelectorAll("[data-ai-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.aiMode === requestedMode);
     button.setAttribute("aria-pressed", String(button.dataset.aiMode === requestedMode));
@@ -425,7 +426,9 @@ async function initialize() {
     document.getElementById("aiMode").textContent = config.endpoint
       ? config.provider === "anthropic" ? "Claude ready" : "AI ready"
       : "Local rules";
-    setStatus("Settings apply only to this website.");
+    setStatus(response.customViewForPage === false
+      ? "The saved custom view belongs to another page. Generate a new design here."
+      : "Settings apply only to this website.");
   } catch {
     siteName.textContent = "Refresh the page and try again";
     setStatus("Newly installed extensions require a page refresh.", true);

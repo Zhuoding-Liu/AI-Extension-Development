@@ -1,4 +1,5 @@
 const STORAGE_KEY = "pageFlowSiteSettings";
+const ORIGINAL_VIEW_KEY = "pageflowOriginalPageVisible";
 
 const DEFAULT_STATE = Object.freeze({
   theme: "original",
@@ -50,7 +51,8 @@ const DEFAULT_STATE = Object.freeze({
   glossaryItems: [],
   paragraphTranslations: [],
   generatedHtml: "",
-  generatedCss: ""
+  generatedCss: "",
+  generatedPagePath: ""
 });
 
 const ALLOWED_THEMES = new Set(["original", "warm", "contrast"]);
@@ -86,6 +88,9 @@ let progressScrollHandler = null;
 let imageViewerHandler = null;
 let keyboardNavigationHandler = null;
 let pendingRebuildState = null;
+const pageControlIds = new WeakMap();
+const pageControlTargets = new Map();
+let nextPageControlId = 0;
 
 function clamp(value, min, max, fallback) {
   const number = Number(value);
@@ -232,6 +237,10 @@ function sanitizeGeneratedSource(value, maxLength) {
   return typeof value === "string" ? value.replace(/\0/g, "").slice(0, maxLength) : "";
 }
 
+function sanitizeGeneratedPagePath(value) {
+  return typeof value === "string" && /^\/[^\s?#]{0,299}$/.test(value) ? value : "";
+}
+
 function sanitizeState(candidate = {}) {
   const palette = sanitizePalette(candidate);
   return {
@@ -284,7 +293,8 @@ function sanitizeState(candidate = {}) {
     glossaryItems: sanitizeGlossaryItems(candidate.glossaryItems),
     paragraphTranslations: sanitizeParagraphTranslations(candidate.paragraphTranslations),
     generatedHtml: sanitizeGeneratedSource(candidate.generatedHtml, 40000),
-    generatedCss: sanitizeGeneratedCss(candidate.generatedCss)
+    generatedCss: sanitizeGeneratedCss(candidate.generatedCss),
+    generatedPagePath: sanitizeGeneratedPagePath(candidate.generatedPagePath)
   };
 }
 
@@ -951,15 +961,56 @@ function extractRebuildDocument(state) {
   };
 }
 
+function collectPageControls() {
+  const selector = "button, a[href], input:not([type='hidden']), select, textarea, [role='button']";
+  const primary = document.querySelector("main, article, [role='main']");
+  const candidates = [
+    ...Array.from(primary?.querySelectorAll(selector) || []),
+    ...Array.from(document.querySelectorAll(selector))
+  ];
+  const seen = new Set();
+  const controls = [];
+  pageControlTargets.clear();
+
+  for (const element of candidates) {
+    if (controls.length >= 40) break;
+    if (seen.has(element) || element.disabled || element.closest("[hidden], [inert], [aria-hidden='true']")) continue;
+    seen.add(element);
+    if (element.tagName === "INPUT" && ["password", "file"].includes(element.type)) continue;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || !element.getClientRects().length) continue;
+
+    const label = cleanContextText(
+      element.getAttribute("aria-label") || element.labels?.[0]?.textContent || element.innerText ||
+      element.getAttribute("title") || element.getAttribute("placeholder") ||
+      (["button", "submit", "reset"].includes(element.type) ? element.value : ""),
+      90
+    );
+    if (!label) continue;
+    let id = pageControlIds.get(element);
+    if (!id) {
+      id = `c${++nextPageControlId}`;
+      pageControlIds.set(element, id);
+    }
+    pageControlTargets.set(id, element);
+    const kind = element.matches("a[href]") ? "link"
+      : element.matches("input, select, textarea") && !["button", "submit", "reset"].includes(element.type) ? "field"
+        : "button";
+    controls.push({ id, label, kind });
+  }
+
+  return controls;
+}
+
 const GENERATED_HTML_TAGS = new Set([
   "main", "article", "section", "aside", "nav", "header", "footer", "div", "span",
   "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "blockquote",
   "pre", "code", "strong", "em", "b", "i", "small", "mark", "figure", "figcaption",
   "img", "table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td", "details",
-  "summary", "hr", "br", "a", "dl", "dt", "dd"
+  "summary", "hr", "br", "a", "button", "dl", "dt", "dd"
 ]);
 const GENERATED_HTML_DANGEROUS_TAGS = new Set([
-  "script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea",
+  "script", "style", "iframe", "object", "embed", "form", "input", "textarea",
   "select", "option", "meta", "link", "base", "svg", "math", "canvas", "video", "audio",
   "source", "template"
 ]);
@@ -973,13 +1024,14 @@ function neutralizeGeneratedMarkup(value) {
   return sanitizeGeneratedSource(value, 40000)
     .replace(/<\s*(script|style|iframe|object|embed|svg|math|video|audio|form|select|textarea|canvas|template)\b[\s\S]*?<\/\s*\1\s*>/gi, "")
     .replace(/<\s*\/?(?:script|style|iframe|object|embed|svg|math|video|audio|form|select|textarea|canvas|template)\b[^>]*>/gi, "")
-    .replace(/<\s*\/?(?:link|meta|base|source|input|button|option)\b[^>]*>/gi, "")
+    .replace(/<\s*\/?(?:link|meta|base|source|input|option)\b[^>]*>/gi, "")
     .replace(/\s(?:src|srcset|href|xlink:href|poster|data|action|formaction|style|on[a-z]+)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
 }
 
 function sanitizeGeneratedMarkup(source, data) {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(neutralizeGeneratedMarkup(source), "text/html");
+  const controls = new Map(collectPageControls().map((control) => [control.id, control]));
   const imageMap = new Map(data.groups.flatMap((group) => group.blocks)
     .filter((block) => block.type === "image" && block.imageId && block.src)
     .map((block) => [block.imageId, block]));
@@ -1016,6 +1068,10 @@ function sanitizeGeneratedMarkup(source, data) {
         element.setAttribute("open", "");
       } else if (name === "href" && tag === "a" && /^#[a-z][a-z0-9_-]{0,48}$/i.test(value)) {
         element.setAttribute("href", value);
+      } else if (name === "data-pageflow-control" && ["a", "button"].includes(tag) && /^c\d{1,5}$/.test(value)) {
+        element.setAttribute(name, value);
+      } else if (name === "data-pageflow-target" && tag === "a" && cleanGeneratedToken(value)) {
+        element.setAttribute(name, value);
       } else if (name === "data-pageflow-image" && tag === "img" && /^img\d{1,3}$/.test(value)) {
         element.setAttribute(name, value);
       } else {
@@ -1034,6 +1090,27 @@ function sanitizeGeneratedMarkup(source, data) {
       element.referrerPolicy = "no-referrer";
       element.src = block.src;
     }
+    if (tag === "a" || tag === "button") {
+      const control = controls.get(element.getAttribute("data-pageflow-control"));
+      const targetId = element.getAttribute("data-pageflow-target");
+      const internalTarget = tag === "a" && targetId && parsed.getElementById(targetId);
+      if (!control && !internalTarget) {
+        element.replaceWith(...Array.from(element.childNodes));
+        return;
+      }
+      if (control) {
+        element.removeAttribute("data-pageflow-target");
+        element.textContent = control.label;
+        element.setAttribute("aria-label", `Open ${control.label} on the original page`);
+      } else {
+        element.removeAttribute("data-pageflow-control");
+      }
+      if (tag === "button") element.type = "button";
+      if (tag === "a") {
+        element.href = "#";
+        element.setAttribute("aria-label", control ? `Open ${control.label} on the original page` : element.textContent);
+      }
+    }
   });
 
   const fragment = document.createDocumentFragment();
@@ -1047,11 +1124,12 @@ function sanitizeGeneratedMarkup(source, data) {
   };
 }
 
-function validateCustomDocumentState(state, data = extractRebuildDocument(state)) {
-  if (state.rebuildLayout !== "custom") return null;
+function validateCustomDocumentState(state, data = null) {
+  if (state.viewMode !== "rebuild" || state.rebuildLayout !== "custom") return null;
   if (!state.generatedHtml.trim()) throw new Error("Claude did not return custom HTML for this design.");
-  const result = sanitizeGeneratedMarkup(state.generatedHtml, data);
-  const sourceTextLength = data.groups.flatMap((group) => [group.heading, ...group.blocks.flatMap((block) => {
+  const sourceData = data || extractRebuildDocument(state);
+  const result = sanitizeGeneratedMarkup(state.generatedHtml, sourceData);
+  const sourceTextLength = sourceData.groups.flatMap((group) => [group.heading, ...group.blocks.flatMap((block) => {
     if (block.text) return [block.text];
     if (block.items) return block.items;
     if (block.rows) return block.rows.flat();
@@ -1154,7 +1232,7 @@ function buildAiContentModel() {
     if (!full) break;
   }
 
-  return { title: data.title, groups, truncated: !full };
+  return { title: data.title, groups, controls: collectPageControls(), truncated: !full };
 }
 
 function appendRebuildBlock(container, block, state, translationMap) {
@@ -1208,12 +1286,61 @@ function appendRebuildBlock(container, block, state, translationMap) {
   }
 }
 
+function originalPageVisible() {
+  try {
+    return sessionStorage.getItem(ORIGINAL_VIEW_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function setOriginalPageVisible(visible) {
+  try {
+    if (visible) sessionStorage.setItem(ORIGINAL_VIEW_KEY, "true");
+    else sessionStorage.removeItem(ORIGINAL_VIEW_KEY);
+  } catch {
+    // The current document can still switch views if session storage is unavailable.
+  }
+}
+
+function showOriginalPage(rebuildHost, target = null) {
+  setOriginalPageVisible(true);
+  document.getElementById("pageflow-original-host")?.remove();
+  rebuildHost.style.display = "none";
+  const returnHost = document.createElement("div");
+  returnHost.id = "pageflow-original-host";
+  const shadow = returnHost.attachShadow({ mode: "open" });
+  const style = document.createElement("style");
+  style.textContent = `
+    :host{all:initial;position:fixed;z-index:2147483647;right:16px;bottom:16px;font:14px/1.4 Arial,sans-serif}
+    button{border:2px solid #ffffff;border-radius:12px;padding:11px 16px;background:#292044;color:#ffffff;font:600 14px Arial,sans-serif;box-shadow:0 8px 28px #0005;cursor:pointer}
+    button:focus-visible{outline:3px solid #8c70ed;outline-offset:3px}
+  `;
+  const back = document.createElement("button");
+  back.type = "button";
+  back.textContent = "Return to PageFlow view";
+  back.addEventListener("click", () => {
+    setOriginalPageVisible(false);
+    returnHost.remove();
+    if (rebuildHost.isConnected) rebuildHost.style.removeProperty("display");
+  });
+  shadow.append(style, back);
+  document.documentElement.appendChild(returnHost);
+  if (target?.isConnected) {
+    target.scrollIntoView({ block: "center", behavior: "auto" });
+    if (typeof target.focus === "function") target.focus({ preventScroll: true });
+  }
+}
+
 function renderRebuildView(state, preview = false) {
+  document.getElementById("pageflow-original-host")?.remove();
   document.getElementById("pageflow-rebuild-host")?.remove();
   if (!document.body) return;
+  if (state.rebuildLayout === "custom" && state.generatedPagePath && state.generatedPagePath !== location.pathname) return;
   const data = extractRebuildDocument(state);
   const customResult = state.rebuildLayout === "custom" ? validateCustomDocumentState(state, data) : null;
   const isCustom = Boolean(customResult);
+  const originalControls = collectPageControls();
   const translationMap = new Map(state.paragraphTranslations.map((item) => [item.paragraphId, item.text]));
   const host = document.createElement("div");
   host.id = "pageflow-rebuild-host";
@@ -1233,6 +1360,8 @@ function renderRebuildView(state, preview = false) {
   exit.addEventListener("click", async () => {
     if (preview) {
       pendingRebuildState = null;
+      setOriginalPageVisible(false);
+      document.getElementById("pageflow-original-host")?.remove();
       host.remove();
       return;
     }
@@ -1246,6 +1375,11 @@ function renderRebuildView(state, preview = false) {
     }
   });
   actions.appendChild(exit);
+  const original = document.createElement("button");
+  original.type = "button";
+  original.textContent = "Use original page";
+  original.addEventListener("click", () => showOriginalPage(host));
+  actions.appendChild(original);
   if (preview) {
     const keep = document.createElement("button");
     keep.type = "button";
@@ -1340,6 +1474,40 @@ function renderRebuildView(state, preview = false) {
     });
   }
   article.appendChild(content);
+  if (isCustom) {
+    content.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-pageflow-control], [data-pageflow-target]");
+      if (!trigger || !content.contains(trigger)) return;
+      event.preventDefault();
+      const controlId = trigger.getAttribute("data-pageflow-control");
+      if (controlId) {
+        showOriginalPage(host, pageControlTargets.get(controlId));
+        return;
+      }
+      const targetId = trigger.getAttribute("data-pageflow-target");
+      const target = content.querySelector(`#${targetId}`);
+      target?.scrollIntoView({ behavior: state.reduceMotion ? "auto" : "smooth", block: "start" });
+    });
+  }
+  if (originalControls.length) {
+    const controlsPanel = document.createElement("details");
+    controlsPanel.className = "original-controls";
+    const heading = document.createElement("summary");
+    heading.textContent = "Original page controls";
+    const explanation = document.createElement("p");
+    explanation.textContent = originalControls.length > 24
+      ? "Showing the first 24 controls. Choose one to use it on the live page, or use the toolbar for all original features."
+      : "Choose a control to open it on the live page. Complete the action there, then return to this view.";
+    controlsPanel.append(heading, explanation);
+    originalControls.slice(0, 24).forEach((control) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = `${control.label} · ${control.kind}`;
+      button.addEventListener("click", () => showOriginalPage(host, pageControlTargets.get(control.id)));
+      controlsPanel.appendChild(button);
+    });
+    article.appendChild(controlsPanel);
+  }
   scroll.appendChild(article);
   shell.append(toolbar, scroll);
 
@@ -1437,14 +1605,16 @@ function renderRebuildView(state, preview = false) {
     figure{margin:24px 0}img{max-width:100%;height:auto;border-radius:${state.cornerRadius || 12}px}.lightbox{position:fixed;inset:0;z-index:8;display:grid;place-items:center;width:100%;height:100%;border:0;background:#08090dee;padding:24px;cursor:zoom-out}.lightbox img{max-width:94vw;max-height:90vh;object-fit:contain;box-shadow:0 20px 70px #000}.table-wrap{max-width:100%;overflow:auto}table{border-collapse:collapse;width:100%;font:14px Arial,sans-serif}th,td{border:1px solid color-mix(in srgb,${foreground} 22%,transparent);padding:9px;text-align:start}
     .summary,.glossary{padding:18px 20px;margin:24px 0;border-radius:12px;background:color-mix(in srgb,${accent} 10%,${background})}.summary h2{font-size:1.05em}.glossary summary{cursor:pointer;font-weight:700}.glossary dt{font-weight:700;color:${accent}}.glossary dd{margin:3px 0 12px}.translation{font-family:Arial,sans-serif;font-size:.9em;padding:.7em;border-inline-start:3px solid ${accent};background:color-mix(in srgb,${accent} 8%,transparent)}
     .search{width:100%;padding:11px 13px;margin:4px 0 20px;border:1px solid color-mix(in srgb,${foreground} 25%,transparent);border-radius:9px;background:${background};color:${foreground}}
+    .original-controls{margin:42px 0 0;padding:16px;border:1px solid color-mix(in srgb,${accent} 28%,transparent);border-radius:12px;background:color-mix(in srgb,${background} 94%,${accent})}.original-controls summary{cursor:pointer;font-weight:700}.original-controls p{font-size:14px}.original-controls button{display:inline-block;margin:5px 7px 0 0;padding:8px 11px;border:1px solid ${accent};border-radius:8px;background:${background};color:${foreground};cursor:pointer}
     .toc{position:fixed;right:18px;top:72px;width:220px;max-height:55vh;overflow:auto;padding:12px;border:1px solid color-mix(in srgb,${accent} 25%,transparent);border-radius:12px;background:color-mix(in srgb,${background} 96%,${accent});box-shadow:0 12px 36px #0002;font:12px Arial,sans-serif}.toc summary{font-weight:700;margin-bottom:6px;cursor:pointer}.toc button{display:block;width:100%;border:0;background:transparent;color:${foreground};padding:5px;text-align:start;cursor:pointer}
     .progress{position:fixed;top:50px;left:0;height:4px;width:0;background:${accent};z-index:3}.top{position:fixed;right:22px;bottom:22px;width:44px;height:44px;border:0;border-radius:50%;background:${accent};color:${accentInk};font-size:22px;cursor:pointer}
     .dyslexia{font-family:"Atkinson Hyperlegible",Verdana,Arial,sans-serif;letter-spacing:.045em;word-spacing:.1em}.low-vision{font-size:20px}.low-vision :focus-visible{outline:4px solid ${accent};outline-offset:3px}
     .custom-document{--pf-background:${background};--pf-text:${foreground};--pf-accent:${accent};--pf-surface:color-mix(in srgb,${background} 92%,${accent});--pf-muted:${foreground};display:block;min-height:100%;padding:0;color:var(--pf-text);background:var(--pf-background);font:16px/1.6 Arial,sans-serif}
     .custom-document *{box-sizing:border-box}.custom-document img{max-width:100%;height:auto}.custom-document table{max-width:100%}.custom-document a{color:var(--pf-accent);text-decoration:underline}.custom-document :focus-visible{outline:3px solid var(--pf-accent);outline-offset:3px}
+    .custom-document button{padding:8px 12px;border:1px solid var(--pf-accent);border-radius:8px;background:var(--pf-surface);color:var(--pf-text);font:inherit;cursor:pointer}
     ${isCustom ? state.generatedCss : ""}
     .custom-document h1,.custom-document h2,.custom-document h3,.custom-document h4,.custom-document h5,.custom-document h6,.custom-document a{color:var(--pf-accent)}.custom-document mark,.custom-document code,.custom-document pre{color:var(--pf-text);background:var(--pf-surface)}
-    @media(max-width:1000px){.toc{display:none}}@media(max-width:760px){.cards .content,.magazine .content{grid-template-columns:1fr}article{width:min(100% - 28px,${width}px);padding-top:30px}.toolbar span{max-width:55%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+    @media(max-width:1000px){.toc{display:none}}@media(max-width:760px){.cards .content,.magazine .content{grid-template-columns:1fr}article{width:min(100% - 28px,${width}px);padding-top:30px}.toolbar{height:78px;flex-wrap:wrap;align-content:center;padding:6px 10px}.toolbar span{flex-basis:100%;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.toolbar div{width:100%;justify-content:flex-end;gap:5px}.toolbar button{padding:4px 7px;font-size:11px}.scroll{top:78px}.progress{top:78px}}
   `;
   shadow.append(style, shell);
   document.documentElement.appendChild(host);
@@ -1453,6 +1623,7 @@ function renderRebuildView(state, preview = false) {
       if (host.isConnected) enforceGeneratedAccessibility(content, foreground, background);
     });
   }
+  if (originalPageVisible()) showOriginalPage(host);
 }
 
 function reconcileBuiltInFeatures(state) {
@@ -1465,7 +1636,11 @@ function reconcileBuiltInFeatures(state) {
     return;
   }
 
-  if (!pendingRebuildState) document.getElementById("pageflow-rebuild-host")?.remove();
+  if (!pendingRebuildState) {
+    setOriginalPageVisible(false);
+    document.getElementById("pageflow-rebuild-host")?.remove();
+    document.getElementById("pageflow-original-host")?.remove();
+  }
   reconcileTableOfContents(state.tableOfContents);
   reconcileReadingProgress(state.readingProgress || state.readingTime);
   reconcileBackToTop(state.backToTop);
@@ -1741,7 +1916,15 @@ if (document.readyState === "loading") {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PAGEFLOW_GET_STATE") {
-    initialization.then(() => sendResponse({ ok: true, state: currentState, site: location.hostname, canUndo: aiStateHistory.length > 0 }));
+    initialization.then(() => sendResponse({
+      ok: true,
+      state: currentState,
+      site: location.hostname,
+      canUndo: aiStateHistory.length > 0,
+      customViewForPage: currentState.viewMode !== "rebuild" || currentState.rebuildLayout !== "custom" ||
+        !currentState.generatedPagePath ||
+        currentState.generatedPagePath === location.pathname
+    }));
     return true;
   }
 
@@ -1755,11 +1938,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PAGEFLOW_VALIDATE_AI_PLAN") {
     try {
       const proposedState = sanitizeState({ ...currentState, ...message.patch });
+      if (proposedState.viewMode === "rebuild" && proposedState.rebuildLayout === "custom") {
+        proposedState.generatedPagePath = sanitizeGeneratedPagePath(location.pathname);
+      }
       validateCustomDocumentState(proposedState);
       const patch = {};
       Object.keys(message.patch || {}).forEach((key) => {
         if (Object.prototype.hasOwnProperty.call(DEFAULT_STATE, key)) patch[key] = proposedState[key];
       });
+      if (proposedState.viewMode === "rebuild" && proposedState.rebuildLayout === "custom") {
+        patch.generatedPagePath = proposedState.generatedPagePath;
+      }
       sendResponse({ ok: true, patch });
     } catch (error) {
       sendResponse({ ok: false, error: error.message });
@@ -1778,7 +1967,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PAGEFLOW_PREVIEW_REBUILD") {
     try {
       pendingRebuildState = sanitizeState({ ...currentState, ...message.patch, viewMode: "rebuild" });
+      if (pendingRebuildState.rebuildLayout === "custom") {
+        pendingRebuildState.generatedPagePath = sanitizeGeneratedPagePath(location.pathname);
+      }
       validateCustomDocumentState(pendingRebuildState);
+      setOriginalPageVisible(false);
       renderRebuildView(pendingRebuildState, true);
       sendResponse({ ok: true, state: pendingRebuildState });
     } catch (error) {
@@ -1789,7 +1982,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "PAGEFLOW_CANCEL_REBUILD_PREVIEW") {
-    if (pendingRebuildState) document.getElementById("pageflow-rebuild-host")?.remove();
+    if (pendingRebuildState) {
+      setOriginalPageVisible(false);
+      document.getElementById("pageflow-rebuild-host")?.remove();
+      document.getElementById("pageflow-original-host")?.remove();
+    }
     pendingRebuildState = null;
     sendResponse({ ok: true });
     return;
@@ -1797,7 +1994,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "PAGEFLOW_SET_STATE") {
     const previousState = { ...currentState };
-    const nextState = sanitizeState({ ...currentState, ...message.patch });
+    const patch = { ...(message.patch || {}) };
+    if (currentState.viewMode === "rebuild" && currentState.rebuildLayout === "custom" &&
+        currentState.generatedPagePath && currentState.generatedPagePath !== location.pathname &&
+        !Object.prototype.hasOwnProperty.call(patch, "viewMode")) {
+      patch.viewMode = "adapt";
+    }
+    const nextState = sanitizeState({ ...currentState, ...patch });
     saveState(nextState)
       .then(() => {
         aiStateHistory.length = 0;
@@ -1815,6 +2018,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PAGEFLOW_APPLY_AI_PLAN") {
     const previousState = { ...currentState };
     const nextState = sanitizeState({ ...currentState, ...message.patch });
+    if (nextState.viewMode === "rebuild" && nextState.rebuildLayout === "custom") {
+      nextState.generatedPagePath = sanitizeGeneratedPagePath(location.pathname);
+    }
     try {
       validateCustomDocumentState(nextState);
     } catch (error) {

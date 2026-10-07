@@ -2,7 +2,7 @@
 
 PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.5.1`
+Version: `1.5.2`
 
 ## Features
 
@@ -69,6 +69,10 @@ When no API endpoint is configured, the popup displays **Local rules**. These co
 Rebuild supports Reading, Magazine, and Cards layouts. It never copies scripts, event handlers, forms, or arbitrary page HTML.
 
 Custom HTML supports substantially more structural freedom than the presets: grid, flexbox, multi-column editorial layouts, custom section hierarchy, cards, side notes, visual grouping, local typography, tables, quotes, and mapped page images. It does not support generated JavaScript, forms, external resources, event handlers, or style attributes.
+
+The rebuilt page now includes **Use original page** and an **Original page controls** panel. AI Custom HTML can also place mapped buttons and in-page navigation links. Selecting a mapped button reveals and focuses the matching live control, where you complete the action. A floating **Return to PageFlow view** button restores the design. This preserves access to original forms, menus, media players, and site scripts without copying their code into the generated document. The original page remains available while you navigate within the same browser tab. Controls inside cross-origin iframes or closed Shadow DOM are reached with **Use original page**.
+
+Custom HTML is bound to the page path where it was generated. Following a link to a different path keeps the original site usable; generate a new custom design for that page if needed. Preset Rebuild views can still rebuild new pages from their current content.
 
 Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. They may take longer than preset changes, so the extension allows up to 180 seconds and shows progress messages while Claude produces the complete JSON, HTML, and CSS response.
 
@@ -224,9 +228,9 @@ Prompt field
     -> Keep/Discard confirmation for Rebuild
 ```
 
-The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, up to 32 numbered paragraph excerpts, a limited visible-text excerpt, registered feature metadata, basic computed appearance, and a capped semantic content model. The content model contains extracted text, hierarchy, tables, lists, image placeholders, and alt text—not the source page HTML or image URLs. It never sends form values, cookies, local storage, query strings, or URL fragments.
+The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, up to 32 numbered paragraph excerpts, a limited visible-text excerpt, registered feature metadata, basic computed appearance, and a capped semantic content model. The content model contains extracted text, hierarchy, tables, lists, image placeholders, alt text, and labels for up to 40 visible page controls—not the source page HTML, image URLs, link destinations, or input values. It never sends form values, cookies, local storage, query strings, or URL fragments.
 
-In Custom mode, the returned HTML is parsed as an inert document. Scripts, forms, embeds, SVG, inline styles, event attributes, unknown image URLs, and unsupported elements are removed. CSS is reduced to reviewed layout and presentation properties, prefixed to the generated document, and rendered inside the extension's Shadow DOM. Accessibility rules enforce safe palette contrast, readable body text, heading minimums, and usable line height.
+In Custom mode, the returned HTML is parsed as an inert document. Scripts, forms, embeds, SVG, inline styles, event attributes, unknown image URLs, and unsupported elements are removed. Generated buttons are retained only when their control ID matches a real original-page control; clicking them shows that control on the live page without triggering its action. CSS is reduced to reviewed layout and presentation properties, prefixed to the generated document, and rendered inside the extension's Shadow DOM. Accessibility rules enforce safe palette contrast, readable body text, heading minimums, and usable line height.
 
 The model is instructed to return a JSON object. A typical response looks like:
 

@@ -71,6 +71,11 @@ test("trusted feature content is sanitized and capped", () => {
   assert.deepEqual(result.paragraphTranslations, [{ paragraphId: "p2", text: "Translated text" }]);
 });
 
+test("generated page scope accepts only a path without query or fragment", () => {
+  assert.equal(sanitize({ generatedPagePath: "/articles/example" }).generatedPagePath, "/articles/example");
+  assert.equal(sanitize({ generatedPagePath: "/articles/example?token=secret" }).generatedPagePath, "");
+});
+
 test("custom CSS keeps layout freedom while rejecting unsafe and inaccessible declarations", () => {
   const result = sanitize({
     generatedHtml: "<main><h1>Safe document</h1><p>Readable content for the generated view.</p></main>",
@@ -95,12 +100,13 @@ test("custom HTML neutralizes active resources before DOM parsing", () => {
   const result = neutralizeMarkup(`
     <style>@import "https://tracker.test/style.css";</style>
     <iframe src="https://tracker.test/frame"></iframe>
-    <main onclick="steal()"><img src="https://tracker.test/pixel" data-pageflow-image="img1"><a href="https://tracker.test">Safe label</a></main>
+    <main onclick="steal()"><img src="https://tracker.test/pixel" data-pageflow-image="img1"><a href="https://tracker.test">Safe label</a><button data-pageflow-control="c1" onclick="steal()">Open details</button></main>
   `);
 
   assert.doesNotMatch(result, /https?:|<style|<iframe|onclick=|\ssrc=|\shref=/i);
   assert.match(result, /data-pageflow-image="img1"/);
   assert.match(result, /Safe label/);
+  assert.match(result, /<button data-pageflow-control="c1">Open details<\/button>/);
 });
 
 test("popup and content script default schemas remain identical", () => {
