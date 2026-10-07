@@ -74,7 +74,7 @@ The rebuilt page now includes **Use original page** and an **Original page contr
 
 Custom HTML is bound to the page path where it was generated. Following a link to a different path keeps the original site usable; generate a new custom design for that page if needed. Preset Rebuild views can still rebuild new pages from their current content.
 
-Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. They may take longer than preset changes, so the extension allows up to 180 seconds and shows progress messages while Claude produces the complete JSON, HTML, and CSS response.
+Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. They may take longer than preset changes, so the extension allows up to 180 seconds and shows progress messages while Claude produces the complete JSON, HTML, and CSS response. Adapt and preset Rebuild requests allow up to 90 seconds. Very long page models are reduced at complete block boundaries, so the model always receives valid JSON. Keep the popup open until the request finishes; the popup performs the network request to avoid the background service worker's fetch-response timeout.
 
 Example custom request:
 
@@ -218,9 +218,9 @@ This version cannot use GenAI to:
 Prompt field
     -> popup.js requests a filtered page summary
     -> content-script.js analyzes the rendered page
-    -> service-worker.js
-    -> configured OpenAI-compatible or Claude endpoint
-    -> JSON design proposal
+    -> service-worker.js prepares the validated request
+    -> popup.js calls the configured OpenAI-compatible or Claude endpoint
+    -> service-worker.js parses the JSON design proposal
     -> content-script.js validation
     -> popup review (Apply or Dismiss)
     -> content-script.js validation
@@ -228,7 +228,7 @@ Prompt field
     -> Keep/Discard confirmation for Rebuild
 ```
 
-The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, up to 32 numbered paragraph excerpts, a limited visible-text excerpt, registered feature metadata, basic computed appearance, and a capped semantic content model. The content model contains extracted text, hierarchy, tables, lists, image placeholders, alt text, and labels for up to 40 visible page controls—not the source page HTML, image URLs, link destinations, or input values. It never sends form values, cookies, local storage, query strings, or URL fragments.
+The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, selected redacted section summaries, headings, limited numbered paragraph excerpts in Adapt and preset Rebuild modes, registered feature metadata, basic computed appearance, and a capped semantic content model. The content model contains extracted text, hierarchy, tables, lists, image placeholders, alt text, and labels for up to 40 visible page controls—not the source page HTML, image URLs, link destinations, or input values. It never sends form values, cookies, local storage, query strings, or URL fragments.
 
 In Custom mode, the returned HTML is parsed as an inert document. Scripts, forms, embeds, SVG, inline styles, event attributes, unknown image URLs, and unsupported elements are removed. Generated buttons are retained only when their control ID matches a real original-page control; clicking them shows that control on the live page without triggering its action. CSS is reduced to reviewed layout and presentation properties, prefixed to the generated document, and rendered inside the extension's Shadow DOM. Accessibility rules enforce safe palette contrast, readable body text, heading minimums, and usable line height.
 
@@ -287,9 +287,21 @@ Check the API endpoint and model name. The configured model must be available fr
 
 Check API billing, available credits, project limits, and rate limits.
 
-### The AI did not return valid settings
+### The AI did not return valid JSON settings
 
 The model response was not valid JSON in the format expected by `service-worker.js`. Try a simpler page-customization request or use a compatible model or proxy.
+
+### The AI response was cut off by the model output limit
+
+The generated design was too long for one model response. Try a more focused prompt or a shorter page. The extension rejects incomplete JSON rather than applying a partial design.
+
+### Could not reach the AI endpoint
+
+Check the saved endpoint, network access, and browser permission for the API domain. Save the AI settings again if the endpoint changed. A saved configuration is not a live connectivity test.
+
+### Page connection lost
+
+PageFlow attempts to reconnect its content script once. If it still fails, reload the extension and refresh the webpage. Restricted browser pages cannot be modified.
 
 ### The page does not change
 
@@ -303,7 +315,7 @@ The model response was not valid JSON in the format expected by `service-worker.
 - `manifest.json`: extension metadata and permissions
 - `popup.html`, `popup.css`, `popup.js`: toolbar interface and interactions
 - `content-script.js`: page styling, validation, and per-site persistence
-- `service-worker.js`: local-rule, OpenAI-compatible, and Anthropic Claude adapters
+- `service-worker.js`: OpenAI-compatible and Anthropic Claude request preparation and response parsing
 - `options.html`, `options.css`, `options.js`: AI configuration page
 - `PLANNING.md`: product roadmap, architecture, testing, and release plan
 - `icons/`: extension icons
@@ -318,7 +330,7 @@ npm test
 npm run check
 ```
 
-The checks validate strict state handling, trusted feature content, generated-CSS security rules, popup/content schema parity, Claude custom-mode request shape, JavaScript syntax, and timeout wiring.
+The checks validate strict state handling, trusted feature content, generated-CSS security rules, popup/content schema parity, Claude custom-mode request shape, bounded page context, response parsing, page reconnection, endpoint permissions, and JavaScript syntax.
 
 ## Development roadmap
 

@@ -1929,7 +1929,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "PAGEFLOW_GET_CONTEXT") {
-    initialization
+    const documentReady = document.body || document.readyState !== "loading" ? Promise.resolve() : new Promise((resolve) => {
+      document.addEventListener("DOMContentLoaded", resolve, { once: true });
+    });
+    Promise.all([initialization, documentReady])
       .then(() => sendResponse({ ok: true, context: getPageContext() }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

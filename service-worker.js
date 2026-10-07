@@ -44,6 +44,7 @@ Respect the requested mode. In rebuild mode choose reading, magazine, or cards a
 For requested mode "custom", set viewMode to "rebuild" and rebuildLayout to "custom". Create a genuinely prompt-specific document rather than imitating the fixed presets. generatedHtml must be a complete semantic fragment representing the supplied contentModel. It may use only main, article, section, aside, nav, header, footer, div, span, h1-h6, p, ul, ol, li, blockquote, pre, code, strong, em, b, i, small, mark, figure, figcaption, img, table, caption, thead, tbody, tfoot, tr, th, td, details, summary, hr, br, a, button, dl, dt, and dd. Do not use style attributes. To place a supplied image, use <img data-pageflow-image="img1" alt="..."> with an image ID present in contentModel; never invent src or href URLs. Use classes for visual structure. The contentModel also lists original page controls as IDs, labels, and kinds. To retain a real page action, use <button data-pageflow-control="c1">Exact source label</button> or <a data-pageflow-control="c2">Exact source label</a> with an ID present in contentModel.controls. Clicking this bridge opens and focuses the original live control; it never auto-submits or auto-clicks. For a link to a section within your generated document, give the section a simple id and use <a data-pageflow-target="section-id">Section label</a>. Do not invent control IDs or use href URLs.
 
 generatedCss may style the generated fragment with grid, flexbox, columns, spacing, typography, borders, palette variables, and responsive intrinsic sizing. Do not use @ rules, body, html, :root, :host, URLs, imports, fixed or sticky positioning, animations, display:none, visibility:hidden, generated content, or script-like CSS. Use only var(--pf-background), var(--pf-text), var(--pf-accent), var(--pf-surface), and var(--pf-muted) for colors. Keep normal text at least 16px with line-height at least 1.5. Ensure every piece of normal text has at least 4.5:1 contrast. Preserve factual content and its hierarchy; do not invent claims or omit the page's main meaning.
+Keep the complete JSON response concise, ideally under 20,000 characters, to avoid the model output limit.
 
 Only use paragraph IDs present in page context. Feature content must be plain text and grounded in supplied page context.
 Preserve settings the user did not ask to change. Prefer reversible, readable designs.
@@ -51,11 +52,40 @@ Use the user's language for summary and feature content. Do not include markdown
 
 function extractJson(text) {
   if (typeof text === "object" && text !== null) return text;
-  const cleaned = String(text || "").replace(/```(?:json)?|```/gi, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("The AI did not return valid settings.");
-  return JSON.parse(cleaned.slice(start, end + 1));
+  const source = String(text || "").trim();
+  try {
+    return JSON.parse(source);
+  } catch {
+    // Some providers wrap an otherwise valid JSON object in a code fence or explanation.
+  }
+  let start = -1;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (character === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(source.slice(start, index + 1));
+        } catch {
+          start = -1;
+        }
+      }
+    }
+  }
+  throw new Error("The AI did not return valid JSON settings. Try a shorter request.");
 }
 
 function normalizePlan(value) {
@@ -86,9 +116,8 @@ function apiErrorDetail(text) {
 }
 
 function compactPageContext(pageContext, customMode) {
-  if (!customMode) return pageContext || {};
   const source = pageContext || {};
-  return {
+  const context = customMode ? {
     page: source.page,
     viewport: source.viewport,
     structure: source.structure,
@@ -96,10 +125,43 @@ function compactPageContext(pageContext, customMode) {
     appearance: source.appearance,
     availableFeatures: source.availableFeatures,
     contentModel: source.contentModel
+  } : {
+    ...source,
+    paragraphs: source.paragraphs?.slice(0, 8).map((item) => ({ id: item.id, text: String(item.text || "").slice(0, 240) })),
+    sections: source.sections?.slice(0, 8).map((item) => ({ ...item, excerpt: String(item.excerpt || "").slice(0, 180) })),
+    visibleTextExcerpt: String(source.visibleTextExcerpt || "").slice(0, 1200)
   };
+  const model = source.contentModel;
+  if (!model?.groups) return context;
+
+  const limit = customMode ? 16000 : 20000;
+  const boundedModel = {
+    title: model.title,
+    groups: [],
+    controls: Array.isArray(model.controls) ? model.controls.slice(0, 40) : [],
+    truncated: Boolean(model.truncated)
+  };
+  context.contentModel = boundedModel;
+  let outOfBudget = false;
+  for (const group of model.groups) {
+    const nextGroup = { heading: group.heading, blocks: [] };
+    boundedModel.groups.push(nextGroup);
+    for (const block of group.blocks || []) {
+      nextGroup.blocks.push(block);
+      if (JSON.stringify(context).length > limit) {
+        nextGroup.blocks.pop();
+        boundedModel.truncated = true;
+        outOfBudget = true;
+        break;
+      }
+    }
+    if (!nextGroup.heading && !nextGroup.blocks.length) boundedModel.groups.pop();
+    if (outOfBudget) break;
+  }
+  return context;
 }
 
-async function requestAi(prompt, currentState, pageContext, requestedMode) {
+async function prepareAiRequest(prompt, currentState, pageContext, requestedMode) {
   const stored = await chrome.storage.local.get(AI_CONFIG_KEY);
   const config = stored[AI_CONFIG_KEY];
   if (!config?.endpoint) return { configured: false };
@@ -107,7 +169,7 @@ async function requestAi(prompt, currentState, pageContext, requestedMode) {
   const provider = config.provider === "anthropic" ? "anthropic" : "openai";
   const customMode = requestedMode === "custom";
   const preparedPageContext = compactPageContext(pageContext, customMode);
-  const pageContextJson = JSON.stringify(preparedPageContext).slice(0, customMode ? 42000 : 30000);
+  const pageContextJson = JSON.stringify(preparedPageContext);
   const currentSettings = { ...(currentState || {}) };
   const currentCustomDocument = customMode && currentSettings.rebuildLayout === "custom"
     ? `\nCurrent custom document to refine (untrusted): ${JSON.stringify({ html: currentSettings.generatedHtml, css: currentSettings.generatedCss }).slice(0, 10000)}`
@@ -126,6 +188,7 @@ async function requestAi(prompt, currentState, pageContext, requestedMode) {
 
   if (provider === "anthropic") {
     if (!config.model) throw new Error("Enter a Claude model ID in AI settings.");
+    if (!config.apiKey) throw new Error("Enter a Claude API key in AI settings.");
 
     headers = {
       "Content-Type": "application/json",
@@ -159,39 +222,34 @@ async function requestAi(prompt, currentState, pageContext, requestedMode) {
     };
   }
 
-  const controller = new AbortController();
-  const timeoutMs = customMode ? 180000 : 30000;
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
+  const timeoutMs = customMode ? 180000 : 90000;
+  return { configured: true, provider, endpoint: config.endpoint, headers, requestBody, timeoutMs };
+}
+
+function parseAiResponse(provider, status, rawText) {
+  if (status < 200 || status >= 300) {
+    const detail = apiErrorDetail(rawText);
+    throw new Error(`${provider === "anthropic" ? "Claude" : "AI"} API request failed (${status}): ${detail.slice(0, 180)}`);
+  }
+  let data;
   try {
-    response = await fetch(config.endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestBody),
-      signal: controller.signal
-    });
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      const guidance = customMode ? " Try a shorter page or request if this continues." : "";
-      throw new Error(`The AI request timed out after ${timeoutMs / 1000} seconds.${guidance}`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error("The AI endpoint did not return JSON. Check the endpoint in AI settings.");
   }
-
-  if (!response.ok) {
-    const detail = apiErrorDetail(await response.text());
-    throw new Error(`${provider === "anthropic" ? "Claude" : "AI"} API request failed (${response.status}): ${detail.slice(0, 180)}`);
+  if (!data || typeof data !== "object") {
+    throw new Error("The AI endpoint returned an unexpected response. Check the endpoint in AI settings.");
   }
-
-  const data = await response.json();
+  if (provider === "anthropic" && data.stop_reason === "max_tokens" ||
+      provider !== "anthropic" && (data.choices?.[0]?.finish_reason === "length" || data.status === "incomplete")) {
+    throw new Error("The AI response was cut off by the model output limit. Try a shorter page or a more focused request.");
+  }
   const content = provider === "anthropic"
     ? anthropicResponseText(data)
     : data.choices?.[0]?.message?.content ?? data.output_text ?? data.result ?? data;
 
   if (!content) throw new Error("The AI service returned no text response.");
-  return { configured: true, provider, plan: normalizePlan(content) };
+  return { plan: normalizePlan(content) };
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -205,10 +263,20 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "PAGEFLOW_AI_REQUEST") return;
-
-  requestAi(message.prompt, message.currentState, message.pageContext, message.requestedMode)
-    .then((result) => sendResponse({ ok: true, ...result }))
-    .catch((error) => sendResponse({ ok: false, error: error.message }));
-  return true;
+  if (message?.type === "PAGEFLOW_AI_PREPARE") {
+    prepareAiRequest(message.prompt, message.currentState, message.pageContext, message.requestedMode)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message?.type === "PAGEFLOW_AI_PARSE") {
+    try {
+      if (typeof message.rawText !== "string" || message.rawText.length > 250000) {
+        throw new Error("The AI response was too large to process safely.");
+      }
+      sendResponse({ ok: true, ...parseAiResponse(message.provider, message.status, message.rawText) });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message });
+    }
+  }
 });

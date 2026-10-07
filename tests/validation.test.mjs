@@ -6,6 +6,7 @@ import vm from "node:vm";
 const contentSource = await readFile(new URL("../content-script.js", import.meta.url), "utf8");
 const popupSource = await readFile(new URL("../popup.js", import.meta.url), "utf8");
 const workerSource = await readFile(new URL("../service-worker.js", import.meta.url), "utf8");
+const optionsSource = await readFile(new URL("../options.js", import.meta.url), "utf8");
 
 function sanitize(input) {
   const prefix = contentSource.slice(0, contentSource.indexOf("function siteKey"));
@@ -143,15 +144,10 @@ test("every trusted registry feature has a boolean state flag and AI schema entr
   });
 });
 
-test("Claude adapter carries custom mode and page context without temperature", async () => {
+test("Claude adapter prepares custom mode and page context without temperature", async () => {
   let listener;
-  let requestBody;
-  let timeoutDelay;
   const context = {
     console,
-    AbortController,
-    setTimeout(_callback, delay) { timeoutDelay = delay; return 1; },
-    clearTimeout() {},
     JSON,
     String,
     Array,
@@ -174,27 +170,6 @@ test("Claude adapter carries custom mode and page context without temperature", 
         onInstalled: { addListener() {} },
         onMessage: { addListener(fn) { listener = fn; } }
       }
-    },
-    fetch: async (_url, options) => {
-      requestBody = JSON.parse(options.body);
-      assert.ok(options.signal);
-      return {
-        ok: true,
-        json: async () => ({
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              summary: "A rebuilt reading page",
-              settings: {
-                viewMode: "rebuild",
-                rebuildLayout: "custom",
-                generatedHtml: "<main><h1>Introduction</h1><p>Generated layout content.</p></main>",
-                generatedCss: ".layout { display: grid; }"
-              }
-            })
-          }]
-        })
-      };
     }
   };
   vm.createContext(context);
@@ -202,7 +177,7 @@ test("Claude adapter carries custom mode and page context without temperature", 
 
   const response = await new Promise((resolve) => {
     listener({
-      type: "PAGEFLOW_AI_REQUEST",
+      type: "PAGEFLOW_AI_PREPARE",
       prompt: "Create a unique editorial page",
       requestedMode: "custom",
       currentState: {},
@@ -218,12 +193,200 @@ test("Claude adapter carries custom mode and page context without temperature", 
   });
 
   assert.equal(response.ok, true);
-  assert.equal(response.plan.settings.viewMode, "rebuild");
-  assert.equal(response.plan.settings.rebuildLayout, "custom");
-  assert.equal(requestBody.max_tokens, 8000);
-  assert.equal(timeoutDelay, 180000);
-  assert.equal(requestBody.temperature, undefined);
-  assert.match(requestBody.messages[0].content[0].text, /Requested mode: custom/);
-  assert.match(requestBody.messages[0].content[0].text, /Introduction/);
-  assert.doesNotMatch(requestBody.messages[0].content[0].text, /DUPLICATE_/);
+  assert.equal(response.configured, true);
+  assert.equal(response.requestBody.max_tokens, 8000);
+  assert.equal(response.timeoutMs, 180000);
+  assert.equal(response.requestBody.temperature, undefined);
+  assert.match(response.requestBody.messages[0].content[0].text, /Requested mode: custom/);
+  assert.match(response.requestBody.messages[0].content[0].text, /Introduction/);
+  assert.doesNotMatch(response.requestBody.messages[0].content[0].text, /DUPLICATE_/);
+
+  let parsed;
+  listener({
+    type: "PAGEFLOW_AI_PARSE",
+    provider: "anthropic",
+    status: 200,
+    rawText: JSON.stringify({ content: [{ type: "text", text: JSON.stringify({
+      summary: "A rebuilt reading page", settings: { viewMode: "rebuild", rebuildLayout: "custom" }
+    }) }] })
+  }, null, (value) => { parsed = value; });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.plan.settings.rebuildLayout, "custom");
+});
+
+test("AI JSON parser accepts a wrapped object with braces inside strings", () => {
+  const context = {
+    input: 'Here is the design:\n```json\n{"summary":"Use {clear} labels","settings":{"fontScale":115}}\n```\nReady.',
+    result: null
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    workerSource.slice(0, workerSource.indexOf("chrome.runtime.onInstalled")) + "; result = normalizePlan(input);",
+    context
+  );
+  assert.equal(context.result.summary, "Use {clear} labels");
+  assert.equal(context.result.settings.fontScale, 115);
+});
+
+test("large page context stays complete JSON and marks omitted content", () => {
+  const context = {
+    input: {
+      page: { title: "Long article" },
+      contentModel: {
+        title: "Long article",
+        controls: [{ id: "c1", label: "Open menu", kind: "button" }],
+        groups: Array.from({ length: 50 }, (_, index) => ({
+          heading: `Section ${index}`,
+          blocks: [{ type: "paragraph", text: "Readable article content. ".repeat(35) }]
+        }))
+      }
+    },
+    result: null
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    workerSource.slice(0, workerSource.indexOf("chrome.runtime.onInstalled")) +
+      "; result = JSON.stringify(compactPageContext(input, true));",
+    context
+  );
+  const result = JSON.parse(context.result);
+  assert.ok(context.result.length <= 16000);
+  assert.equal(result.contentModel.title, "Long article");
+  assert.equal(result.contentModel.controls[0].id, "c1");
+  assert.equal(result.contentModel.truncated, true);
+  assert.ok(result.contentModel.groups.length < 50);
+});
+
+test("Claude output-limit errors are reported before attempting JSON parsing", async () => {
+  let listener;
+  const context = {
+    chrome: {
+      storage: { local: { get: async () => ({
+        pageFlowAiConfig: {
+          provider: "anthropic", endpoint: "https://api.anthropic.com/v1/messages",
+          model: "claude-test", apiKey: "test-only"
+        }
+      }) } },
+      runtime: { onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } } }
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(workerSource, context);
+  let response;
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", status: 200,
+    rawText: JSON.stringify({ stop_reason: "max_tokens", content: [{ type: "text", text: '{"settings":{' }] })
+  }, null, (value) => { response = value; });
+  assert.equal(response.ok, false);
+  assert.match(response.error, /output limit/);
+});
+
+test("AI network request runs in the popup, not the service worker", async () => {
+  let calledUrl;
+  let timeoutDelay;
+  const context = {
+    currentState: {},
+    requestedMode: "adapt",
+    AbortController,
+    setTimeout(_callback, delay) { timeoutDelay = delay; return 1; },
+    clearTimeout() {},
+    chrome: { runtime: { sendMessage: async (message) => message.type === "PAGEFLOW_AI_PREPARE"
+      ? { ok: true, configured: true, provider: "anthropic", endpoint: "https://api.anthropic.com/v1/messages",
+        headers: { "x-api-key": "test-only" }, requestBody: { model: "claude-test" }, timeoutMs: 90000 }
+      : { ok: true, plan: { summary: "Larger text", settings: { fontScale: 115 } } } } },
+    fetch: async (url, request) => {
+      calledUrl = url;
+      assert.ok(request.signal);
+      return { status: 200, text: async () => '{"content":[]}' };
+    },
+    result: null
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    popupSource.slice(popupSource.indexOf("async function requestAiFromPopup"), popupSource.indexOf("async function runSmartPrompt")) +
+      '; result = requestAiFromPopup("Increase text size", {});',
+    context
+  );
+  const result = await context.result;
+  assert.equal(calledUrl, "https://api.anthropic.com/v1/messages");
+  assert.equal(timeoutDelay, 90000);
+  assert.equal(result.plan.settings.fontScale, 115);
+});
+
+test("popup reconnects a missing page script once", async () => {
+  let sends = 0;
+  let injections = 0;
+  const context = {
+    activeTabId: 17,
+    chrome: {
+      tabs: { sendMessage: async () => {
+        sends += 1;
+        if (sends === 1) throw new Error("Could not establish connection. Receiving end does not exist.");
+        return { ok: true };
+      } },
+      scripting: { executeScript: async (request) => {
+        injections += 1;
+        assert.equal(request.target.tabId, 17);
+        assert.deepEqual(Array.from(request.files), ["content-script.js"]);
+      } }
+    },
+    result: null
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    popupSource.slice(popupSource.indexOf("async function sendToPage"), popupSource.indexOf("async function applyPatch")) +
+      "; result = sendToPage({type: 'PAGEFLOW_GET_CONTEXT'});",
+    context
+  );
+  assert.deepEqual(await context.result, { ok: true });
+  assert.equal(sends, 2);
+  assert.equal(injections, 1);
+});
+
+test("switching modes cannot reuse stale custom HTML as a preset rebuild", () => {
+  const context = { result: null };
+  vm.createContext(context);
+  vm.runInContext(
+    popupSource.slice(popupSource.indexOf("function settingsForMode"), popupSource.indexOf("async function runSmartPrompt")) +
+      '; result = { rebuild: settingsForMode({ rebuildLayout: "custom", generatedHtml: "<main>old</main>" }, "rebuild"), custom: settingsForMode({}, "custom") };',
+    context
+  );
+  assert.equal(context.result.rebuild.viewMode, "rebuild");
+  assert.equal(context.result.rebuild.rebuildLayout, "reading");
+  assert.equal(context.result.rebuild.generatedHtml, undefined);
+  assert.equal(context.result.custom.rebuildLayout, "custom");
+});
+
+test("saving a new endpoint path keeps permission for the same API origin", async () => {
+  let submit;
+  const removed = [];
+  const elements = Object.fromEntries(["aiForm", "provider", "endpoint", "endpointHint", "model", "apiKey", "status", "clear"]
+    .map((id) => [id, { value: "", textContent: "", style: {}, addEventListener(type, handler) {
+      if (id === "aiForm" && type === "submit") submit = handler;
+    } }]));
+  const config = {
+    provider: "anthropic", endpoint: "https://api.anthropic.com/v1/old-path",
+    model: "claude-test", apiKey: "test-only"
+  };
+  const context = {
+    document: { getElementById: (id) => elements[id] },
+    chrome: {
+      storage: { local: {
+        get: async () => ({ pageFlowAiConfig: config }),
+        set: async (value) => { Object.assign(config, value.pageFlowAiConfig); }
+      } },
+      permissions: {
+        request: async () => true,
+        remove: async (value) => { removed.push(value); }
+      }
+    },
+    URL
+  };
+  vm.createContext(context);
+  vm.runInContext(optionsSource, context);
+  await Promise.resolve();
+  elements.endpoint.value = "https://api.anthropic.com/v1/messages";
+  await submit({ preventDefault() {} });
+  assert.equal(config.endpoint, "https://api.anthropic.com/v1/messages");
+  assert.equal(removed.length, 0);
 });

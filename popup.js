@@ -167,10 +167,21 @@ function render(state) {
 
 async function sendToPage(message) {
   if (!activeTabId) throw new Error("The current page is unavailable.");
-  return chrome.tabs.sendMessage(activeTabId, message);
+  try {
+    return await chrome.tabs.sendMessage(activeTabId, message);
+  } catch (error) {
+    if (!/receiving end does not exist|could not establish connection/i.test(error?.message || "")) throw error;
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ["content-script.js"] });
+      return await chrome.tabs.sendMessage(activeTabId, message);
+    } catch {
+      throw new Error("Page connection lost. Refresh this webpage, then reopen PageFlow AI.");
+    }
+  }
 }
 
 async function applyPatch(patch, quiet = false) {
+  const previousState = currentState;
   currentState = { ...currentState, ...patch };
   render(currentState);
   try {
@@ -181,6 +192,7 @@ async function applyPatch(patch, quiet = false) {
     hidePlan();
     if (!quiet) setStatus("Applied to this website.");
   } catch (error) {
+    render(previousState);
     setStatus(error.message || "This page cannot be modified.", true);
   }
 }
@@ -240,6 +252,64 @@ function localPromptToPatch(text) {
   return patch;
 }
 
+function settingsForMode(settings, mode) {
+  const patch = { ...(settings || {}), viewMode: mode === "adapt" ? "adapt" : "rebuild" };
+  if (mode === "custom") {
+    patch.rebuildLayout = "custom";
+  } else {
+    delete patch.generatedHtml;
+    delete patch.generatedCss;
+    delete patch.generatedPagePath;
+    if (mode === "rebuild" && !["reading", "magazine", "cards"].includes(patch.rebuildLayout)) {
+      patch.rebuildLayout = "reading";
+    }
+  }
+  return patch;
+}
+
+async function requestAiFromPopup(text, pageContext) {
+  const prepared = await chrome.runtime.sendMessage({
+    type: "PAGEFLOW_AI_PREPARE",
+    prompt: text,
+    currentState,
+    pageContext,
+    requestedMode
+  });
+  if (!prepared?.ok) throw new Error(prepared?.error || "The AI request could not be prepared.");
+  if (!prepared.configured) return prepared;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), prepared.timeoutMs);
+  let response;
+  let rawText;
+  try {
+    response = await fetch(prepared.endpoint, {
+      method: "POST",
+      headers: prepared.headers,
+      body: JSON.stringify(prepared.requestBody),
+      signal: controller.signal
+    });
+    rawText = await response.text();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`The AI request timed out after ${prepared.timeoutMs / 1000} seconds. Try a shorter page or request.`);
+    }
+    throw new Error("Could not reach the AI endpoint. Check its URL, browser permission, and network connection.");
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  if (rawText.length > 250000) throw new Error("The AI response was too large to process safely.");
+
+  const parsed = await chrome.runtime.sendMessage({
+    type: "PAGEFLOW_AI_PARSE",
+    provider: prepared.provider,
+    status: response.status,
+    rawText
+  });
+  if (!parsed?.ok) throw new Error(parsed?.error || "The AI response could not be processed.");
+  return { configured: true, provider: prepared.provider, plan: parsed.plan };
+}
+
 async function runSmartPrompt() {
   if (promptButton.disabled) return;
   const text = prompt.value.trim();
@@ -250,15 +320,12 @@ async function runSmartPrompt() {
   }
 
   promptButton.disabled = true;
+  hidePlan();
   setStatus("Reading the current page safely…");
   const progressTimers = [];
   try {
     let contextResponse;
-    try {
-      contextResponse = await sendToPage({ type: "PAGEFLOW_GET_CONTEXT" });
-    } catch {
-      throw new Error("Page connection lost. Refresh this webpage, then reopen PageFlow AI.");
-    }
+    contextResponse = await sendToPage({ type: "PAGEFLOW_GET_CONTEXT" });
     if (!contextResponse?.ok) throw new Error(contextResponse?.error || "The current page could not be read.");
     const pageContext = contextResponse.context || {};
 
@@ -268,29 +335,17 @@ async function runSmartPrompt() {
       progressTimers.push(setTimeout(() => setStatus("Generating and styling the isolated page…"), 60000));
       progressTimers.push(setTimeout(() => setStatus("This complex page is still processing…"), 120000));
     }
-    const response = await chrome.runtime.sendMessage({
-      type: "PAGEFLOW_AI_REQUEST",
-      prompt: text,
-      currentState,
-      pageContext,
-      requestedMode
-    });
-    if (!response?.ok) throw new Error(response?.error || "The AI request failed.");
+    const response = await requestAiFromPopup(text, pageContext);
 
     if (response.configured) {
-      const proposedSettings = {
-        ...(response.plan?.settings || {}),
-        viewMode: requestedMode === "adapt" ? "adapt" : "rebuild"
-      };
-      if (requestedMode === "custom") proposedSettings.rebuildLayout = "custom";
-      if (requestedMode === "rebuild" && !proposedSettings.rebuildLayout) proposedSettings.rebuildLayout = "reading";
+      const proposedSettings = settingsForMode(response.plan?.settings, requestedMode);
       const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch: proposedSettings });
       if (!validation?.ok) throw new Error(validation?.error || "The AI design could not be validated.");
       showPlan({ ...response.plan, settings: validation.patch });
       document.getElementById("aiMode").textContent = response.provider === "anthropic" ? "Claude connected" : "AI connected";
     } else {
       if (requestedMode === "custom") throw new Error("AI Custom HTML requires a connected AI provider.");
-      const patch = { ...localPromptToPatch(text), viewMode: requestedMode };
+      const patch = settingsForMode(localPromptToPatch(text), requestedMode);
       if (requestedMode === "rebuild") {
         const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch });
         showPlan({ summary: "A local rebuild preview using trusted PageFlow features.", settings: validation.patch });

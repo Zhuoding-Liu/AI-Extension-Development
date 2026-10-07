@@ -93,7 +93,11 @@ form.addEventListener("submit", async (event) => {
   });
   if (previousEndpoint && previousEndpoint !== url) {
     try {
-      await chrome.permissions.remove({ origins: [`${new URL(previousEndpoint).origin}/*`] });
+      const previousOrigin = new URL(previousEndpoint).origin;
+      const nextOrigin = url ? new URL(url).origin : "";
+      if (previousOrigin !== nextOrigin) {
+        await chrome.permissions.remove({ origins: [`${previousOrigin}/*`] });
+      }
     } catch {
       // Ignore stale or invalid legacy endpoint permissions.
     }
