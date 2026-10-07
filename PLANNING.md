@@ -17,7 +17,7 @@ PageFlow AI is a Chrome and Edge extension that helps users improve webpage appe
 
 ## 3. Current baseline
 
-The current `1.5.0` development version provides:
+The current `1.5.1` development version provides:
 
 - Original, Warm, and Contrast themes
 - image hiding and grayscale images
@@ -36,7 +36,7 @@ The current `1.5.0` development version provides:
 - Reading, Magazine, and Cards rebuild layouts
 - a sanitized AI Custom HTML mode with semantic page content, prompt-specific HTML/CSS, isolated rendering, and accessibility guards
 - a trusted feature registry covering navigation, content aids, media, accessibility, audits, and region controls
-- strict boolean/range validation, transactional state persistence, and a 30-second AI request timeout
+- strict boolean/range validation, transactional state persistence, a 30-second standard timeout, and a 180-second Custom HTML timeout
 - dependency-free automated schema and Claude-adapter tests
 
 Current AI request flow:

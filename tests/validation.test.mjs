@@ -140,11 +140,12 @@ test("every trusted registry feature has a boolean state flag and AI schema entr
 test("Claude adapter carries custom mode and page context without temperature", async () => {
   let listener;
   let requestBody;
+  let timeoutDelay;
   const context = {
     console,
     AbortController,
-    setTimeout,
-    clearTimeout,
+    setTimeout(_callback, delay) { timeoutDelay = delay; return 1; },
+    clearTimeout() {},
     JSON,
     String,
     Array,
@@ -199,7 +200,14 @@ test("Claude adapter carries custom mode and page context without temperature", 
       prompt: "Create a unique editorial page",
       requestedMode: "custom",
       currentState: {},
-      pageContext: { paragraphs: [{ id: "p1", text: "Introduction" }] }
+      pageContext: {
+        paragraphs: [{ id: "p1", text: "DUPLICATE_PARAGRAPH_SHOULD_BE_REMOVED" }],
+        visibleTextExcerpt: "DUPLICATE_EXCERPT_SHOULD_BE_REMOVED",
+        contentModel: {
+          title: "Introduction",
+          groups: [{ heading: "Overview", blocks: [{ type: "paragraph", text: "Introduction content" }] }]
+        }
+      }
     }, null, resolve);
   });
 
@@ -207,7 +215,9 @@ test("Claude adapter carries custom mode and page context without temperature", 
   assert.equal(response.plan.settings.viewMode, "rebuild");
   assert.equal(response.plan.settings.rebuildLayout, "custom");
   assert.equal(requestBody.max_tokens, 8000);
+  assert.equal(timeoutDelay, 180000);
   assert.equal(requestBody.temperature, undefined);
   assert.match(requestBody.messages[0].content[0].text, /Requested mode: custom/);
   assert.match(requestBody.messages[0].content[0].text, /Introduction/);
+  assert.doesNotMatch(requestBody.messages[0].content[0].text, /DUPLICATE_/);
 });

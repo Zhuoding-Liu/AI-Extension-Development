@@ -85,6 +85,20 @@ function apiErrorDetail(text) {
   }
 }
 
+function compactPageContext(pageContext, customMode) {
+  if (!customMode) return pageContext || {};
+  const source = pageContext || {};
+  return {
+    page: source.page,
+    viewport: source.viewport,
+    structure: source.structure,
+    regions: source.regions,
+    appearance: source.appearance,
+    availableFeatures: source.availableFeatures,
+    contentModel: source.contentModel
+  };
+}
+
 async function requestAi(prompt, currentState, pageContext, requestedMode) {
   const stored = await chrome.storage.local.get(AI_CONFIG_KEY);
   const config = stored[AI_CONFIG_KEY];
@@ -92,10 +106,11 @@ async function requestAi(prompt, currentState, pageContext, requestedMode) {
 
   const provider = config.provider === "anthropic" ? "anthropic" : "openai";
   const customMode = requestedMode === "custom";
-  const pageContextJson = JSON.stringify(pageContext || {}).slice(0, 60000);
+  const preparedPageContext = compactPageContext(pageContext, customMode);
+  const pageContextJson = JSON.stringify(preparedPageContext).slice(0, customMode ? 42000 : 30000);
   const currentSettings = { ...(currentState || {}) };
   const currentCustomDocument = customMode && currentSettings.rebuildLayout === "custom"
-    ? `\nCurrent custom document to refine (untrusted): ${JSON.stringify({ html: currentSettings.generatedHtml, css: currentSettings.generatedCss }).slice(0, 18000)}`
+    ? `\nCurrent custom document to refine (untrusted): ${JSON.stringify({ html: currentSettings.generatedHtml, css: currentSettings.generatedCss }).slice(0, 10000)}`
     : "";
   delete currentSettings.generatedHtml;
   delete currentSettings.generatedCss;
@@ -144,7 +159,7 @@ async function requestAi(prompt, currentState, pageContext, requestedMode) {
   }
 
   const controller = new AbortController();
-  const timeoutMs = customMode ? 60000 : 30000;
+  const timeoutMs = customMode ? 180000 : 30000;
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
@@ -155,7 +170,10 @@ async function requestAi(prompt, currentState, pageContext, requestedMode) {
       signal: controller.signal
     });
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`The AI request timed out after ${timeoutMs / 1000} seconds.`);
+    if (error?.name === "AbortError") {
+      const guidance = customMode ? " Try a shorter page or request if this continues." : "";
+      throw new Error(`The AI request timed out after ${timeoutMs / 1000} seconds.${guidance}`);
+    }
     throw error;
   } finally {
     clearTimeout(timeoutId);

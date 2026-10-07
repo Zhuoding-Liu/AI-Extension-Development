@@ -2,7 +2,7 @@
 
 PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.5.0`
+Version: `1.5.1`
 
 ## Features
 
@@ -69,6 +69,8 @@ When no API endpoint is configured, the popup displays **Local rules**. These co
 Rebuild supports Reading, Magazine, and Cards layouts. It never copies scripts, event handlers, forms, or arbitrary page HTML.
 
 Custom HTML supports substantially more structural freedom than the presets: grid, flexbox, multi-column editorial layouts, custom section hierarchy, cards, side notes, visual grouping, local typography, tables, quotes, and mapped page images. It does not support generated JavaScript, forms, external resources, event handlers, or style attributes.
+
+Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. They may take longer than preset changes, so the extension allows up to 180 seconds and shows progress messages while Claude produces the complete JSON, HTML, and CSS response.
 
 Example custom request:
 

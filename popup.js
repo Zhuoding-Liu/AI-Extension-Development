@@ -240,6 +240,7 @@ function localPromptToPatch(text) {
 }
 
 async function runSmartPrompt() {
+  if (promptButton.disabled) return;
   const text = prompt.value.trim();
   if (!text) {
     prompt.focus();
@@ -249,16 +250,23 @@ async function runSmartPrompt() {
 
   promptButton.disabled = true;
   setStatus("Reading the current page safely…");
+  const progressTimers = [];
   try {
-    let pageContext = {};
+    let contextResponse;
     try {
-      const contextResponse = await sendToPage({ type: "PAGEFLOW_GET_CONTEXT" });
-      if (contextResponse?.ok) pageContext = contextResponse.context || {};
+      contextResponse = await sendToPage({ type: "PAGEFLOW_GET_CONTEXT" });
     } catch {
-      // AI customization can still use the current PageFlow settings without context.
+      throw new Error("Page connection lost. Refresh this webpage, then reopen PageFlow AI.");
     }
+    if (!contextResponse?.ok) throw new Error(contextResponse?.error || "The current page could not be read.");
+    const pageContext = contextResponse.context || {};
 
     setStatus("Understanding your preferences…");
+    if (requestedMode === "custom") {
+      progressTimers.push(setTimeout(() => setStatus("Claude is designing the custom HTML structure…"), 20000));
+      progressTimers.push(setTimeout(() => setStatus("Generating and styling the isolated page…"), 60000));
+      progressTimers.push(setTimeout(() => setStatus("This complex page is still processing…"), 120000));
+    }
     const response = await chrome.runtime.sendMessage({
       type: "PAGEFLOW_AI_REQUEST",
       prompt: text,
@@ -297,6 +305,7 @@ async function runSmartPrompt() {
   } catch (error) {
     setStatus(error.message, true);
   } finally {
+    progressTimers.forEach(clearTimeout);
     promptButton.disabled = false;
   }
 }
