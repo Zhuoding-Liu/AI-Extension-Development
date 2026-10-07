@@ -48,7 +48,9 @@ const DEFAULT_STATE = Object.freeze({
   regionVisibilityPanel: false,
   summaryText: "",
   glossaryItems: [],
-  paragraphTranslations: []
+  paragraphTranslations: [],
+  generatedHtml: "",
+  generatedCss: ""
 });
 
 const ALLOWED_THEMES = new Set(["original", "warm", "contrast"]);
@@ -60,7 +62,7 @@ const ALLOWED_LAYOUT_PRESETS = new Set(["original", "reading", "cards", "workspa
 const ALLOWED_FONT_STYLES = new Set(["original", "sans", "serif", "mono"]);
 const ALLOWED_TEXT_ALIGNMENTS = new Set(["original", "left", "center", "justify"]);
 const ALLOWED_VIEW_MODES = new Set(["adapt", "rebuild"]);
-const ALLOWED_REBUILD_LAYOUTS = new Set(["reading", "magazine", "cards"]);
+const ALLOWED_REBUILD_LAYOUTS = new Set(["reading", "magazine", "cards", "custom"]);
 const FEATURE_REGISTRY = Object.freeze({
   tableOfContents: { label: "Collapsible table of contents", modes: ["adapt", "rebuild"] },
   pageSearch: { label: "Page search", modes: ["adapt", "rebuild"] },
@@ -150,6 +152,86 @@ function sanitizeReadingWidth(value) {
   return Math.min(1200, Math.max(480, number));
 }
 
+const GENERATED_CSS_PROPERTIES = new Set([
+  "display", "grid-template-columns", "grid-template-rows", "grid-column", "grid-row",
+  "grid-auto-flow", "gap", "column-gap", "row-gap", "align-items", "align-content",
+  "align-self", "justify-content", "justify-items", "justify-self", "place-items", "order",
+  "flex", "flex-basis", "flex-direction", "flex-flow", "flex-grow", "flex-shrink", "flex-wrap",
+  "width", "min-width", "max-width", "min-height", "margin", "margin-block", "margin-inline",
+  "margin-top", "margin-right", "margin-bottom", "margin-left", "padding", "padding-block",
+  "padding-inline", "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "border", "border-width", "border-style", "border-color", "border-radius", "border-block-start",
+  "border-inline-start", "background", "background-color", "box-shadow", "color", "font-family",
+  "font-size", "font-style", "font-weight", "font-variant", "letter-spacing", "line-height",
+  "text-align", "text-decoration", "text-decoration-color", "text-transform", "text-wrap",
+  "white-space", "word-break", "overflow-wrap", "list-style", "list-style-position",
+  "object-fit", "object-position", "aspect-ratio", "columns", "column-width", "column-count",
+  "break-inside", "vertical-align", "position", "inset", "top", "right", "bottom", "left"
+]);
+
+function safeGeneratedCssValue(property, value) {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.length > 320 || /[{};\\]/.test(normalized)) return "";
+  if (/url\s*\(|image-set\s*\(|expression\s*\(|javascript:|data:|@import|-moz-binding|behavior\s*:/i.test(normalized)) return "";
+  if (!/^[a-z0-9#.,()%/\s_'"+*\-]+$/i.test(normalized)) return "";
+  if (property === "position" && /\b(?:fixed|sticky)\b/i.test(normalized)) return "";
+  if (property === "display" && /\bnone\b/i.test(normalized)) return "";
+  if (property === "font-size") {
+    const match = normalized.match(/^(-?\d*\.?\d+)\s*(px|rem|em|%)$/i);
+    if (!match) return "";
+    const amount = Number(match[1]);
+    const minimum = { px: 14, rem: 0.875, em: 0.875, "%": 87.5 }[match[2].toLowerCase()];
+    if (!Number.isFinite(amount) || amount < minimum) return "";
+  }
+  if (property === "line-height") {
+    const match = normalized.match(/^(\d*\.?\d+)(px|rem|em|%)?$/i);
+    if (!match) return "";
+    const amount = Number(match[1]);
+    const unit = (match[2] || "").toLowerCase();
+    const minimum = { "": 1.4, px: 20, rem: 1.4, em: 1.4, "%": 140 }[unit];
+    if (!Number.isFinite(amount) || amount < minimum) return "";
+  }
+  if (/color|background|border|shadow|decoration/.test(property)) {
+    const structuralBorder = /^(?:0|none|inherit|initial|unset|\d+(?:\.\d+)?(?:px|rem|em)?(?:\s+(?:solid|dashed|dotted))?)$/i.test(normalized);
+    if (!structuralBorder && !/var\(--pf-(?:background|text|accent|surface|muted)\)|currentcolor|transparent|color-mix\(/i.test(normalized)) return "";
+    if (/#[0-9a-f]{3,8}\b|\brgba?\(|\bhsla?\(/i.test(normalized)) return "";
+    if (/^background(?:-color)?$/.test(property) && /var\(--pf-(?:accent|text|muted)\)/i.test(normalized)) return "";
+  }
+  return normalized;
+}
+
+function sanitizeGeneratedCss(value) {
+  const source = typeof value === "string" ? value.slice(0, 20000).replace(/\/\*[\s\S]*?\*\//g, "") : "";
+  const rules = [];
+  const blockPattern = /([^{}]+)\{([^{}]*)\}/g;
+  let match;
+  while ((match = blockPattern.exec(source)) && rules.length < 120) {
+    const selectorText = match[1].trim();
+    if (!selectorText || /@|:host|:root|\b(?:html|body)\b/i.test(selectorText)) continue;
+    const selectors = selectorText.split(",").map((selector) => selector.trim()).filter((selector) => {
+      return selector && selector.length <= 180 && /^[a-z0-9_*#.:[\]="'()\s>+~\-]+$/i.test(selector);
+    }).slice(0, 8);
+    if (!selectors.length) continue;
+    const declarations = [];
+    match[2].split(";").forEach((declaration) => {
+      const separator = declaration.indexOf(":");
+      if (separator < 1) return;
+      const property = declaration.slice(0, separator).trim().toLowerCase();
+      if (!GENERATED_CSS_PROPERTIES.has(property)) return;
+      const safeValue = safeGeneratedCssValue(property, declaration.slice(separator + 1));
+      if (safeValue) declarations.push(`${property}:${safeValue}`);
+    });
+    if (declarations.length) {
+      rules.push(`${selectors.map((selector) => selector.startsWith(".custom-document") ? selector : `.custom-document ${selector}`).join(",")} {${declarations.join(";")}}`);
+    }
+  }
+  return rules.join("\n");
+}
+
+function sanitizeGeneratedSource(value, maxLength) {
+  return typeof value === "string" ? value.replace(/\0/g, "").slice(0, maxLength) : "";
+}
+
 function sanitizeState(candidate = {}) {
   const palette = sanitizePalette(candidate);
   return {
@@ -200,7 +282,9 @@ function sanitizeState(candidate = {}) {
     regionVisibilityPanel: strictBoolean(candidate.regionVisibilityPanel, DEFAULT_STATE.regionVisibilityPanel),
     summaryText: sanitizeTextValue(candidate.summaryText, 1200),
     glossaryItems: sanitizeGlossaryItems(candidate.glossaryItems),
-    paragraphTranslations: sanitizeParagraphTranslations(candidate.paragraphTranslations)
+    paragraphTranslations: sanitizeParagraphTranslations(candidate.paragraphTranslations),
+    generatedHtml: sanitizeGeneratedSource(candidate.generatedHtml, 40000),
+    generatedCss: sanitizeGeneratedCss(candidate.generatedCss)
   };
 }
 
@@ -819,6 +903,7 @@ function extractRebuildDocument(state) {
   const groups = [{ heading: "", blocks: [] }];
   const nodes = Array.from(root?.querySelectorAll("h2, h3, p, ul, ol, blockquote, table, img") || []).slice(0, 220);
   let current = groups[0];
+  let imageIndex = 0;
 
   nodes.forEach((node) => {
     if (node.matches("h2, h3")) {
@@ -852,7 +937,10 @@ function extractRebuildDocument(state) {
     }
     if (node.matches("img") && !state.hideImages) {
       const src = safeImageUrl(node.currentSrc || node.src);
-      if (src && Number(node.naturalWidth || 0) >= 180) current.blocks.push({ type: "image", src, alt: cleanContextText(node.alt, 180) });
+      if (src && Number(node.naturalWidth || 0) >= 180) {
+        imageIndex += 1;
+        current.blocks.push({ type: "image", imageId: `img${imageIndex}`, src, alt: cleanContextText(node.alt, 180) });
+      }
     }
   });
 
@@ -861,6 +949,212 @@ function extractRebuildDocument(state) {
     site: cleanContextText(location.hostname, 120),
     groups: groups.filter((group) => group.heading || group.blocks.length).slice(0, 28)
   };
+}
+
+const GENERATED_HTML_TAGS = new Set([
+  "main", "article", "section", "aside", "nav", "header", "footer", "div", "span",
+  "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "blockquote",
+  "pre", "code", "strong", "em", "b", "i", "small", "mark", "figure", "figcaption",
+  "img", "table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td", "details",
+  "summary", "hr", "br", "a", "dl", "dt", "dd"
+]);
+const GENERATED_HTML_DANGEROUS_TAGS = new Set([
+  "script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea",
+  "select", "option", "meta", "link", "base", "svg", "math", "canvas", "video", "audio",
+  "source", "template"
+]);
+const GENERATED_ROLES = new Set(["main", "article", "region", "navigation", "complementary", "note", "list", "listitem", "heading", "img"]);
+
+function cleanGeneratedToken(value) {
+  return /^[a-z][a-z0-9_-]{0,48}$/i.test(String(value || "")) ? String(value) : "";
+}
+
+function neutralizeGeneratedMarkup(value) {
+  return sanitizeGeneratedSource(value, 40000)
+    .replace(/<\s*(script|style|iframe|object|embed|svg|math|video|audio|form|select|textarea|canvas|template)\b[\s\S]*?<\/\s*\1\s*>/gi, "")
+    .replace(/<\s*\/?(?:script|style|iframe|object|embed|svg|math|video|audio|form|select|textarea|canvas|template)\b[^>]*>/gi, "")
+    .replace(/<\s*\/?(?:link|meta|base|source|input|button|option)\b[^>]*>/gi, "")
+    .replace(/\s(?:src|srcset|href|xlink:href|poster|data|action|formaction|style|on[a-z]+)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+}
+
+function sanitizeGeneratedMarkup(source, data) {
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(neutralizeGeneratedMarkup(source), "text/html");
+  const imageMap = new Map(data.groups.flatMap((group) => group.blocks)
+    .filter((block) => block.type === "image" && block.imageId && block.src)
+    .map((block) => [block.imageId, block]));
+
+  Array.from(parsed.body.querySelectorAll("*")).forEach((element) => {
+    const tag = element.tagName.toLowerCase();
+    if (GENERATED_HTML_DANGEROUS_TAGS.has(tag)) {
+      element.remove();
+      return;
+    }
+    if (!GENERATED_HTML_TAGS.has(tag)) {
+      element.replaceWith(...Array.from(element.childNodes));
+      return;
+    }
+
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value;
+      if (name === "class") {
+        const classes = value.split(/\s+/).map(cleanGeneratedToken).filter(Boolean).slice(0, 12);
+        if (classes.length) element.setAttribute("class", classes.join(" "));
+        else element.removeAttribute(attribute.name);
+      } else if (name === "id") {
+        const id = cleanGeneratedToken(value);
+        if (id) element.id = id;
+        else element.removeAttribute(attribute.name);
+      } else if (["aria-label", "aria-labelledby", "aria-describedby", "title", "alt"].includes(name)) {
+        element.setAttribute(name, cleanContextText(value, 180));
+      } else if (name === "role" && GENERATED_ROLES.has(value)) {
+        element.setAttribute("role", value);
+      } else if (["colspan", "rowspan"].includes(name) && ["td", "th"].includes(tag)) {
+        element.setAttribute(name, String(clamp(value, 1, 12, 1)));
+      } else if (name === "open" && tag === "details") {
+        element.setAttribute("open", "");
+      } else if (name === "href" && tag === "a" && /^#[a-z][a-z0-9_-]{0,48}$/i.test(value)) {
+        element.setAttribute("href", value);
+      } else if (name === "data-pageflow-image" && tag === "img" && /^img\d{1,3}$/.test(value)) {
+        element.setAttribute(name, value);
+      } else {
+        element.removeAttribute(attribute.name);
+      }
+    });
+
+    if (tag === "img") {
+      const block = imageMap.get(element.getAttribute("data-pageflow-image"));
+      if (!block) {
+        element.remove();
+        return;
+      }
+      element.alt = cleanContextText(element.alt || block.alt || "Page image", 180);
+      element.loading = "lazy";
+      element.referrerPolicy = "no-referrer";
+      element.src = block.src;
+    }
+  });
+
+  const fragment = document.createDocumentFragment();
+  Array.from(parsed.body.childNodes).forEach((node) => fragment.appendChild(document.importNode(node, true)));
+  return {
+    fragment,
+    textLength: cleanContextText(parsed.body.textContent, 50000).length,
+    elementCount: parsed.body.querySelectorAll("*").length,
+    headingCount: parsed.body.querySelectorAll("h1, h2, h3, h4, h5, h6").length,
+    landmarkCount: parsed.body.querySelectorAll("main, article, section").length
+  };
+}
+
+function validateCustomDocumentState(state, data = extractRebuildDocument(state)) {
+  if (state.rebuildLayout !== "custom") return null;
+  if (!state.generatedHtml.trim()) throw new Error("Claude did not return custom HTML for this design.");
+  const result = sanitizeGeneratedMarkup(state.generatedHtml, data);
+  const sourceTextLength = data.groups.flatMap((group) => [group.heading, ...group.blocks.flatMap((block) => {
+    if (block.text) return [block.text];
+    if (block.items) return block.items;
+    if (block.rows) return block.rows.flat();
+    return [];
+  })]).join(" ").length;
+  const minimumTextLength = Math.min(2000, Math.max(120, Math.floor(sourceTextLength * 0.25)));
+  if (result.textLength < minimumTextLength || result.elementCount < 3 || !result.headingCount || !result.landmarkCount) {
+    throw new Error("The generated document did not contain enough safe page content.");
+  }
+  return result;
+}
+
+function parseRenderedColor(value) {
+  const rgb = String(value || "").match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+  if (rgb) return { channels: rgb.slice(1, 4).map(Number), alpha: rgb[4] === undefined ? 1 : Number(rgb[4]) };
+  const srgb = String(value || "").match(/^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)$/i);
+  if (srgb) return { channels: srgb.slice(1, 4).map((channel) => Number(channel) * 255), alpha: srgb[4] === undefined ? 1 : Number(srgb[4]) };
+  if (/^#[0-9a-f]{6}$/i.test(String(value || ""))) {
+    return { channels: String(value).slice(1).match(/.{2}/g).map((channel) => parseInt(channel, 16)), alpha: 1 };
+  }
+  return null;
+}
+
+function renderedContrast(first, second) {
+  const luminance = (color) => {
+    const linear = color.channels.map((channel) => {
+      const value = channel / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  };
+  const firstLuminance = luminance(first);
+  const secondLuminance = luminance(second);
+  return (Math.max(firstLuminance, secondLuminance) + 0.05) / (Math.min(firstLuminance, secondLuminance) + 0.05);
+}
+
+function enforceGeneratedAccessibility(root, foreground, background) {
+  const fallbackText = parseRenderedColor(foreground);
+  const fallbackBackground = parseRenderedColor(background);
+  Array.from(root.querySelectorAll("*")).forEach((element) => {
+    const hasDirectText = Array.from(element.childNodes).some((node) => node.nodeType === Node.TEXT_NODE && node.nodeValue.trim());
+    if (!hasDirectText) return;
+    const style = getComputedStyle(element);
+    const tag = element.tagName.toLowerCase();
+    const minimumSize = tag === "h1" ? 32 : tag === "h2" ? 24 : tag === "h3" ? 20 : ["small", "figcaption"].includes(tag) ? 14 : 16;
+    const fontSize = parseFloat(style.fontSize);
+    if (!Number.isFinite(fontSize) || fontSize < minimumSize) {
+      element.style.setProperty("font-size", `${minimumSize}px`, "important");
+    }
+    const effectiveFontSize = Math.max(minimumSize, Number.isFinite(fontSize) ? fontSize : minimumSize);
+    const lineHeight = parseFloat(style.lineHeight);
+    if (!Number.isFinite(lineHeight) || lineHeight / effectiveFontSize < 1.4) {
+      element.style.setProperty("line-height", "1.5", "important");
+    }
+
+    let backgroundColor = null;
+    let parent = element;
+    while (parent && parent !== root.parentElement) {
+      const candidate = parseRenderedColor(getComputedStyle(parent).backgroundColor);
+      if (candidate && candidate.alpha >= 0.95) {
+        backgroundColor = candidate;
+        break;
+      }
+      parent = parent.parentElement;
+    }
+    backgroundColor ||= fallbackBackground;
+    const textColor = parseRenderedColor(style.color);
+    if (!textColor || !backgroundColor || renderedContrast(textColor, backgroundColor) < 4.5) {
+      const black = parseRenderedColor("#111111");
+      const white = parseRenderedColor("#ffffff");
+      const accessibleFallback = fallbackText && renderedContrast(fallbackText, backgroundColor) >= 4.5
+        ? foreground
+        : renderedContrast(black, backgroundColor) >= renderedContrast(white, backgroundColor) ? "#111111" : "#ffffff";
+      element.style.setProperty("color", accessibleFallback, "important");
+    }
+  });
+}
+
+function buildAiContentModel() {
+  const data = extractRebuildDocument(DEFAULT_STATE);
+  const groups = [];
+  let remaining = 26000;
+  let full = true;
+
+  for (const group of data.groups) {
+    const nextGroup = { heading: group.heading, blocks: [] };
+    for (const block of group.blocks) {
+      const safeBlock = block.type === "image"
+        ? { type: "image", imageId: block.imageId, alt: block.alt }
+        : block;
+      const size = JSON.stringify(safeBlock).length;
+      if (size > remaining) {
+        full = false;
+        break;
+      }
+      nextGroup.blocks.push(safeBlock);
+      remaining -= size;
+    }
+    if (nextGroup.heading || nextGroup.blocks.length) groups.push(nextGroup);
+    if (!full) break;
+  }
+
+  return { title: data.title, groups, truncated: !full };
 }
 
 function appendRebuildBlock(container, block, state, translationMap) {
@@ -918,6 +1212,8 @@ function renderRebuildView(state, preview = false) {
   document.getElementById("pageflow-rebuild-host")?.remove();
   if (!document.body) return;
   const data = extractRebuildDocument(state);
+  const customResult = state.rebuildLayout === "custom" ? validateCustomDocumentState(state, data) : null;
+  const isCustom = Boolean(customResult);
   const translationMap = new Map(state.paragraphTranslations.map((item) => [item.paragraphId, item.text]));
   const host = document.createElement("div");
   host.id = "pageflow-rebuild-host";
@@ -927,7 +1223,9 @@ function renderRebuildView(state, preview = false) {
   const toolbar = document.createElement("header");
   toolbar.className = "toolbar";
   const status = document.createElement("span");
-  status.textContent = preview ? "Rebuild preview — original page is unchanged" : "Rebuild view";
+  status.textContent = preview
+    ? `${isCustom ? "AI Custom HTML" : "Rebuild"} preview — original page is unchanged`
+    : isCustom ? "AI Custom HTML view" : "Rebuild view";
   const actions = document.createElement("div");
   const exit = document.createElement("button");
   exit.type = "button";
@@ -979,7 +1277,7 @@ function renderRebuildView(state, preview = false) {
   meta.className = "meta";
   const wordCount = data.groups.flatMap((group) => group.blocks).filter((block) => block.text).reduce((total, block) => total + block.text.split(/\s+/).length, 0);
   meta.textContent = `${data.site} · ${Math.max(1, Math.ceil(wordCount / 220))} min read`;
-  article.append(title, meta);
+  if (!isCustom) article.append(title, meta);
 
   if (state.pageSearch) {
     const search = document.createElement("input");
@@ -988,8 +1286,9 @@ function renderRebuildView(state, preview = false) {
     search.placeholder = "Search rebuilt page";
     search.addEventListener("input", () => {
       const query = search.value.trim().toLowerCase();
-      article.querySelectorAll(".group").forEach((group) => {
-        group.hidden = Boolean(query) && !group.textContent.toLowerCase().includes(query);
+      const targets = isCustom ? content.querySelectorAll("section, article") : content.querySelectorAll(".group");
+      targets.forEach((target) => {
+        target.hidden = Boolean(query) && !target.textContent.toLowerCase().includes(query);
       });
     });
     article.appendChild(search);
@@ -1023,19 +1322,23 @@ function renderRebuildView(state, preview = false) {
     article.appendChild(glossary);
   }
 
-  const content = document.createElement("main");
-  content.className = "content";
-  data.groups.forEach((groupData) => {
-    const group = document.createElement("section");
-    group.className = "group";
-    if (groupData.heading) {
-      const heading = document.createElement("h2");
-      heading.textContent = groupData.heading;
-      group.appendChild(heading);
-    }
-    groupData.blocks.forEach((block) => appendRebuildBlock(group, block, state, translationMap));
-    content.appendChild(group);
-  });
+  const content = document.createElement(isCustom ? "div" : "main");
+  content.className = isCustom ? "custom-document" : "content";
+  if (isCustom) {
+    content.appendChild(customResult.fragment);
+  } else {
+    data.groups.forEach((groupData) => {
+      const group = document.createElement("section");
+      group.className = "group";
+      if (groupData.heading) {
+        const heading = document.createElement("h2");
+        heading.textContent = groupData.heading;
+        group.appendChild(heading);
+      }
+      groupData.blocks.forEach((block) => appendRebuildBlock(group, block, state, translationMap));
+      content.appendChild(group);
+    });
+  }
   article.appendChild(content);
   scroll.appendChild(article);
   shell.append(toolbar, scroll);
@@ -1065,7 +1368,7 @@ function renderRebuildView(state, preview = false) {
     scroll.tabIndex = 0;
     scroll.addEventListener("keydown", (event) => {
       if (!event.altKey || !["ArrowDown", "ArrowUp"].includes(event.key)) return;
-      const headings = Array.from(content.querySelectorAll("h2"));
+      const headings = Array.from(content.querySelectorAll("h1, h2, h3"));
       if (!headings.length) return;
       event.preventDefault();
       const currentIndex = headings.findIndex((heading) => heading.getBoundingClientRect().top > 64);
@@ -1083,7 +1386,10 @@ function renderRebuildView(state, preview = false) {
     const label = document.createElement("summary");
     label.textContent = "On this page";
     toc.appendChild(label);
-    Array.from(content.querySelectorAll(".group > h2")).slice(0, 24).forEach((heading) => {
+    const tocHeadings = isCustom
+      ? content.querySelectorAll("h1, h2, h3")
+      : content.querySelectorAll(".group > h2");
+    Array.from(tocHeadings).slice(0, 24).forEach((heading) => {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = heading.textContent;
@@ -1115,14 +1421,16 @@ function renderRebuildView(state, preview = false) {
 
   const background = state.customBackground || "#fbfaf7";
   const foreground = state.customText || "#25232a";
-  const accent = state.customAccent || "#6950b8";
+  const requestedAccent = state.customAccent || "#6950b8";
+  const accent = contrastRatio(background, requestedAccent) >= 4.5 ? requestedAccent : foreground;
+  const accentInk = contrastRatio(accent, "#ffffff") >= 4.5 ? "#ffffff" : "#111111";
   const width = state.readingWidth || 820;
   const style = document.createElement("style");
   style.textContent = `
     :host{all:initial;position:fixed;inset:0;z-index:2147483647;color:${foreground};background:${background};font:16px/1.72 Georgia,serif}
     *{box-sizing:border-box}.shell{position:absolute;inset:0;background:${background};color:${foreground}}.scroll{position:absolute;inset:50px 0 0;overflow:auto}
     .toolbar{height:50px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 16px;background:#17151d;color:#fff;font:13px Arial,sans-serif;box-shadow:0 2px 12px #0003}
-    .toolbar div{display:flex;gap:8px}.toolbar button{border:1px solid #5b5666;border-radius:8px;padding:7px 11px;background:#292630;color:#fff;cursor:pointer}.toolbar .primary{background:${accent};border-color:${accent}}
+    .toolbar div{display:flex;gap:8px}.toolbar button{border:1px solid #5b5666;border-radius:8px;padding:7px 11px;background:#292630;color:#fff;cursor:pointer}.toolbar .primary{background:${accent};border-color:${accent};color:${accentInk}}
     article{width:min(${width}px,calc(100% - 40px));margin:0 auto;padding:48px 0 90px}h1{font-size:clamp(34px,6vw,66px);line-height:1.05;letter-spacing:-.035em;margin:0 0 12px}.meta{color:color-mix(in srgb,${foreground} 62%,transparent);font:13px Arial,sans-serif;margin:0 0 30px}
     h2{font-size:1.45em;line-height:1.2;color:${accent};margin:0 0 14px}p,li{font-size:1em}blockquote{border-inline-start:4px solid ${accent};margin:24px 0;padding:8px 18px;background:color-mix(in srgb,${accent} 8%,transparent)}
     .content{display:grid;gap:${state.sectionGap || 28}px}.group{min-width:0}.cards .content,.magazine .content{grid-template-columns:repeat(2,minmax(0,1fr))}.cards .group{padding:24px;border:1px solid color-mix(in srgb,${accent} 25%,transparent);border-radius:${state.cornerRadius || 16}px;background:color-mix(in srgb,${background} 94%,${accent})}.magazine .group:first-child{grid-column:1/-1}
@@ -1130,12 +1438,21 @@ function renderRebuildView(state, preview = false) {
     .summary,.glossary{padding:18px 20px;margin:24px 0;border-radius:12px;background:color-mix(in srgb,${accent} 10%,${background})}.summary h2{font-size:1.05em}.glossary summary{cursor:pointer;font-weight:700}.glossary dt{font-weight:700;color:${accent}}.glossary dd{margin:3px 0 12px}.translation{font-family:Arial,sans-serif;font-size:.9em;padding:.7em;border-inline-start:3px solid ${accent};background:color-mix(in srgb,${accent} 8%,transparent)}
     .search{width:100%;padding:11px 13px;margin:4px 0 20px;border:1px solid color-mix(in srgb,${foreground} 25%,transparent);border-radius:9px;background:${background};color:${foreground}}
     .toc{position:fixed;right:18px;top:72px;width:220px;max-height:55vh;overflow:auto;padding:12px;border:1px solid color-mix(in srgb,${accent} 25%,transparent);border-radius:12px;background:color-mix(in srgb,${background} 96%,${accent});box-shadow:0 12px 36px #0002;font:12px Arial,sans-serif}.toc summary{font-weight:700;margin-bottom:6px;cursor:pointer}.toc button{display:block;width:100%;border:0;background:transparent;color:${foreground};padding:5px;text-align:start;cursor:pointer}
-    .progress{position:fixed;top:50px;left:0;height:4px;width:0;background:${accent};z-index:3}.top{position:fixed;right:22px;bottom:22px;width:44px;height:44px;border:0;border-radius:50%;background:${accent};color:#fff;font-size:22px;cursor:pointer}
+    .progress{position:fixed;top:50px;left:0;height:4px;width:0;background:${accent};z-index:3}.top{position:fixed;right:22px;bottom:22px;width:44px;height:44px;border:0;border-radius:50%;background:${accent};color:${accentInk};font-size:22px;cursor:pointer}
     .dyslexia{font-family:"Atkinson Hyperlegible",Verdana,Arial,sans-serif;letter-spacing:.045em;word-spacing:.1em}.low-vision{font-size:20px}.low-vision :focus-visible{outline:4px solid ${accent};outline-offset:3px}
+    .custom-document{--pf-background:${background};--pf-text:${foreground};--pf-accent:${accent};--pf-surface:color-mix(in srgb,${background} 92%,${accent});--pf-muted:${foreground};display:block;min-height:100%;padding:0;color:var(--pf-text);background:var(--pf-background);font:16px/1.6 Arial,sans-serif}
+    .custom-document *{box-sizing:border-box}.custom-document img{max-width:100%;height:auto}.custom-document table{max-width:100%}.custom-document a{color:var(--pf-accent);text-decoration:underline}.custom-document :focus-visible{outline:3px solid var(--pf-accent);outline-offset:3px}
+    ${isCustom ? state.generatedCss : ""}
+    .custom-document h1,.custom-document h2,.custom-document h3,.custom-document h4,.custom-document h5,.custom-document h6,.custom-document a{color:var(--pf-accent)}.custom-document mark,.custom-document code,.custom-document pre{color:var(--pf-text);background:var(--pf-surface)}
     @media(max-width:1000px){.toc{display:none}}@media(max-width:760px){.cards .content,.magazine .content{grid-template-columns:1fr}article{width:min(100% - 28px,${width}px);padding-top:30px}.toolbar span{max-width:55%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
   `;
   shadow.append(style, shell);
   document.documentElement.appendChild(host);
+  if (isCustom) {
+    requestAnimationFrame(() => {
+      if (host.isConnected) enforceGeneratedAccessibility(content, foreground, background);
+    });
+  }
 }
 
 function reconcileBuiltInFeatures(state) {
@@ -1385,6 +1702,7 @@ function getPageContext() {
     headings,
     paragraphs,
     sections: sectionSummaries(),
+    contentModel: buildAiContentModel(),
     availableFeatures: Object.entries(FEATURE_REGISTRY).map(([id, definition]) => ({
       id,
       label: definition.label,
@@ -1435,12 +1753,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "PAGEFLOW_VALIDATE_AI_PLAN") {
-    const proposedState = sanitizeState({ ...currentState, ...message.patch });
-    const patch = {};
-    Object.keys(message.patch || {}).forEach((key) => {
-      if (Object.prototype.hasOwnProperty.call(DEFAULT_STATE, key)) patch[key] = proposedState[key];
-    });
-    sendResponse({ ok: true, patch });
+    try {
+      const proposedState = sanitizeState({ ...currentState, ...message.patch });
+      validateCustomDocumentState(proposedState);
+      const patch = {};
+      Object.keys(message.patch || {}).forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(DEFAULT_STATE, key)) patch[key] = proposedState[key];
+      });
+      sendResponse({ ok: true, patch });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message });
+    }
     return;
   }
 
@@ -1455,6 +1778,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PAGEFLOW_PREVIEW_REBUILD") {
     try {
       pendingRebuildState = sanitizeState({ ...currentState, ...message.patch, viewMode: "rebuild" });
+      validateCustomDocumentState(pendingRebuildState);
       renderRebuildView(pendingRebuildState, true);
       sendResponse({ ok: true, state: pendingRebuildState });
     } catch (error) {
@@ -1491,6 +1815,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "PAGEFLOW_APPLY_AI_PLAN") {
     const previousState = { ...currentState };
     const nextState = sanitizeState({ ...currentState, ...message.patch });
+    try {
+      validateCustomDocumentState(nextState);
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message });
+      return;
+    }
     saveState(nextState)
       .then(() => {
         aiStateHistory.push(previousState);

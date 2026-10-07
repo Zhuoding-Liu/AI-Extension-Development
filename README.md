@@ -2,7 +2,7 @@
 
 PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.4.0`
+Version: `1.5.0`
 
 ## Features
 
@@ -22,6 +22,7 @@ Version: `1.4.0`
 - Review, Apply, Dismiss, and Undo controls for AI proposals
 - Adapt mode for controlled changes to the existing page
 - Rebuild Preview mode that renders a sanitized reading view inside an isolated Shadow DOM without replacing the source page
+- AI Custom HTML mode for prompt-specific semantic HTML and scoped CSS, with tag, attribute, property, URL, font-size, and contrast safeguards
 - A trusted Feature Registry for search, reading time, summaries, glossary explanations, paragraph translations, simplified tables, image viewing, video hiding, accessibility modes, keyboard navigation, form audits, and region visibility
 
 The Dark theme is not included in this version.
@@ -63,8 +64,19 @@ When no API endpoint is configured, the popup displays **Local rules**. These co
 
 - **Adapt** applies validated style and trusted-feature settings to the existing page after review.
 - **Rebuild preview** extracts safe text, headings, lists, tables, and selected images into an isolated reading view. The source DOM remains in place. Use **Keep this view** inside the preview to save it, or **Discard** to return without saving.
+- **AI Custom HTML** asks the connected model for a unique semantic document and layout CSS based on the prompt and filtered page content model. It is sanitized, scoped to the isolated preview, and accessibility-guarded before display.
 
 Rebuild supports Reading, Magazine, and Cards layouts. It never copies scripts, event handlers, forms, or arbitrary page HTML.
+
+Custom HTML supports substantially more structural freedom than the presets: grid, flexbox, multi-column editorial layouts, custom section hierarchy, cards, side notes, visual grouping, local typography, tables, quotes, and mapped page images. It does not support generated JavaScript, forms, external resources, event handlers, or style attributes.
+
+Example custom request:
+
+```text
+Create a distinctive Swiss editorial layout for this page with an asymmetric grid,
+a strong typographic hierarchy, a compact contents rail, pull quotes, and clearly
+grouped supporting sections. Preserve the meaning and keep normal text accessible.
+```
 
 Example request:
 
@@ -175,11 +187,13 @@ The GenAI service can return only the following page settings:
 | `backToTop` | boolean | trusted built-in feature |
 | `highlightHeadings` | boolean | `true` or `false` |
 | `viewMode` | string | `adapt`, `rebuild` |
-| `rebuildLayout` | string | `reading`, `magazine`, `cards` |
+| `rebuildLayout` | string | `reading`, `magazine`, `cards`, `custom` |
 | Trusted feature flags | boolean | search, reading tools, content aids, media, accessibility, keyboard, audit, and region tools |
 | `summaryText` | string | plain text, maximum 1200 characters |
 | `glossaryItems` | array | maximum 16 validated term/definition objects |
 | `paragraphTranslations` | array | maximum 24 validated paragraph-ID/text objects |
+| `generatedHtml` | string | Custom mode only; semantic fragment, maximum 40,000 characters, sanitized before rendering |
+| `generatedCss` | string | Custom mode only; allowlisted scoped rules, maximum 20,000 characters |
 
 AI output is sanitized by `content-script.js` before it is displayed for review and again when it is applied.
 
@@ -187,7 +201,7 @@ This version cannot use GenAI to:
 
 - move individual arbitrary DOM nodes or rewrite page content
 - generate or execute JavaScript
-- inject arbitrary HTML or CSS
+- inject unsanitized HTML/CSS into the source page
 - invent a new executable feature that is not implemented as a trusted built-in
 - submit forms or perform account actions
 - access browser-internal pages
@@ -204,11 +218,13 @@ Prompt field
     -> content-script.js validation
     -> popup review (Apply or Dismiss)
     -> content-script.js validation
-    -> Adapt renderer OR isolated Rebuild preview
+    -> Adapt renderer, preset Rebuild, OR sanitized Custom HTML preview
     -> Keep/Discard confirmation for Rebuild
 ```
 
-The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, up to 32 numbered paragraph excerpts, a limited visible-text excerpt, registered feature metadata, and basic computed appearance. Context is capped before it is sent. It never sends complete page HTML, form values, cookies, local storage, query strings, or URL fragments.
+The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, up to 18 redacted section summaries, headings, up to 32 numbered paragraph excerpts, a limited visible-text excerpt, registered feature metadata, basic computed appearance, and a capped semantic content model. The content model contains extracted text, hierarchy, tables, lists, image placeholders, and alt text—not the source page HTML or image URLs. It never sends form values, cookies, local storage, query strings, or URL fragments.
+
+In Custom mode, the returned HTML is parsed as an inert document. Scripts, forms, embeds, SVG, inline styles, event attributes, unknown image URLs, and unsupported elements are removed. CSS is reduced to reviewed layout and presentation properties, prefixed to the generated document, and rendered inside the extension's Shadow DOM. Accessibility rules enforce safe palette contrast, readable body text, heading minimums, and usable line height.
 
 The model is instructed to return a JSON object. A typical response looks like:
 
@@ -296,7 +312,7 @@ npm test
 npm run check
 ```
 
-The checks validate strict state handling, trusted feature content, popup/content schema parity, Claude request shape, JavaScript syntax, and timeout wiring.
+The checks validate strict state handling, trusted feature content, generated-CSS security rules, popup/content schema parity, Claude custom-mode request shape, JavaScript syntax, and timeout wiring.
 
 ## Development roadmap
 

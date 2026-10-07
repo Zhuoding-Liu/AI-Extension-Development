@@ -46,7 +46,9 @@ const DEFAULT_STATE = {
   regionVisibilityPanel: false,
   summaryText: "",
   glossaryItems: [],
-  paragraphTranslations: []
+  paragraphTranslations: [],
+  generatedHtml: "",
+  generatedCss: ""
 };
 
 let activeTabId = null;
@@ -73,7 +75,8 @@ const FIELD_LABELS = {
   imageViewer: "Image viewer", hideVideos: "Hide videos", dyslexiaMode: "Dyslexia-friendly mode",
   lowVisionMode: "Low Vision mode", keyboardNavigation: "Keyboard navigation",
   formAccessibilityAudit: "Form accessibility audit", regionVisibilityPanel: "Region visibility panel",
-  summaryText: "Summary content", glossaryItems: "Glossary content", paragraphTranslations: "Translations"
+  summaryText: "Summary content", glossaryItems: "Glossary content", paragraphTranslations: "Translations",
+  generatedHtml: "Generated HTML", generatedCss: "Generated CSS"
 };
 
 const siteName = document.getElementById("siteName");
@@ -96,10 +99,11 @@ function formatValue(key, value) {
   return Number(value).toFixed(1);
 }
 
-function describePlanValue(value) {
+function describePlanValue(key, value) {
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "") return "Original";
   if (Array.isArray(value)) return `${value.length} item(s)`;
+  if (key === "generatedHtml" || key === "generatedCss") return `${String(value).length.toLocaleString()} characters (sanitized before preview)`;
   const text = String(value);
   return text.length > 90 ? `${text.slice(0, 87)}…` : text;
 }
@@ -125,7 +129,7 @@ function showPlan(plan) {
   aiPlanSummary.textContent = pendingPlan.summary;
   aiPlanChanges.replaceChildren(...changes.map(([key, value]) => {
     const item = document.createElement("li");
-    item.textContent = `${FIELD_LABELS[key] || key}: ${describePlanValue(value)}`;
+    item.textContent = `${FIELD_LABELS[key] || key}: ${describePlanValue(key, value)}`;
     return item;
   }));
   aiPlan.hidden = false;
@@ -137,27 +141,15 @@ function showPlan(plan) {
 
 function render(state) {
   currentState = { ...DEFAULT_STATE, ...state };
-  requestedMode = currentState.viewMode === "rebuild" ? "rebuild" : requestedMode;
+  if (currentState.viewMode === "rebuild") {
+    requestedMode = currentState.rebuildLayout === "custom" ? "custom" : "rebuild";
+  }
   document.querySelectorAll("[data-ai-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.aiMode === requestedMode);
     button.setAttribute("aria-pressed", String(button.dataset.aiMode === requestedMode));
   });
 
-  document.querySelectorAll("[data-ai-mode]").forEach((button) => {
-  button.addEventListener("click", () => {
-    requestedMode = button.dataset.aiMode === "rebuild" ? "rebuild" : "adapt";
-    document.querySelectorAll("[data-ai-mode]").forEach((item) => {
-      item.classList.toggle("active", item === button);
-      item.setAttribute("aria-pressed", String(item === button));
-    });
-    hidePlan();
-    setStatus(requestedMode === "rebuild"
-      ? "Rebuild will open an isolated preview before it is saved."
-      : "Adapt modifies the existing page after review.");
-  });
-});
-
-document.querySelectorAll("[data-theme]").forEach((button) => {
+  document.querySelectorAll("[data-theme]").forEach((button) => {
     button.classList.toggle("active", button.dataset.theme === currentState.theme);
   });
 
@@ -277,13 +269,18 @@ async function runSmartPrompt() {
     if (!response?.ok) throw new Error(response?.error || "The AI request failed.");
 
     if (response.configured) {
-      const proposedSettings = { ...(response.plan?.settings || {}), viewMode: requestedMode };
+      const proposedSettings = {
+        ...(response.plan?.settings || {}),
+        viewMode: requestedMode === "adapt" ? "adapt" : "rebuild"
+      };
+      if (requestedMode === "custom") proposedSettings.rebuildLayout = "custom";
       if (requestedMode === "rebuild" && !proposedSettings.rebuildLayout) proposedSettings.rebuildLayout = "reading";
       const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch: proposedSettings });
       if (!validation?.ok) throw new Error(validation?.error || "The AI design could not be validated.");
       showPlan({ ...response.plan, settings: validation.patch });
       document.getElementById("aiMode").textContent = response.provider === "anthropic" ? "Claude connected" : "AI connected";
     } else {
+      if (requestedMode === "custom") throw new Error("AI Custom HTML requires a connected AI provider.");
       const patch = { ...localPromptToPatch(text), viewMode: requestedMode };
       if (requestedMode === "rebuild") {
         const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch });
@@ -303,6 +300,23 @@ async function runSmartPrompt() {
     promptButton.disabled = false;
   }
 }
+
+document.querySelectorAll("[data-ai-mode]").forEach((button) => {
+  button.addEventListener("click", () => {
+    requestedMode = ["rebuild", "custom"].includes(button.dataset.aiMode) ? button.dataset.aiMode : "adapt";
+    document.querySelectorAll("[data-ai-mode]").forEach((item) => {
+      item.classList.toggle("active", item === button);
+      item.setAttribute("aria-pressed", String(item === button));
+    });
+    hidePlan();
+    const messages = {
+      adapt: "Adapt modifies the existing page after review.",
+      rebuild: "Rebuild will open an isolated preset preview before it is saved.",
+      custom: "Claude will generate a sanitized, isolated HTML and CSS preview."
+    };
+    setStatus(messages[requestedMode]);
+  });
+});
 
 document.querySelectorAll("[data-theme]").forEach((button) => {
   button.addEventListener("click", () => applyPatch({ theme: button.dataset.theme }));

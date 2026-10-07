@@ -27,6 +27,14 @@ function sanitize(input) {
   return structuredClone(context.result);
 }
 
+function neutralizeMarkup(input) {
+  const prefix = contentSource.slice(0, contentSource.indexOf("function sanitizeGeneratedMarkup"));
+  const context = { input, result: null, Set, Object, Number, String, Math };
+  vm.createContext(context);
+  vm.runInContext(`${prefix}; result = neutralizeGeneratedMarkup(input);`, context);
+  return context.result;
+}
+
 test("strict state validation rejects coercion and invalid ranges", () => {
   const result = sanitize({
     hideImages: "false",
@@ -63,6 +71,38 @@ test("trusted feature content is sanitized and capped", () => {
   assert.deepEqual(result.paragraphTranslations, [{ paragraphId: "p2", text: "Translated text" }]);
 });
 
+test("custom CSS keeps layout freedom while rejecting unsafe and inaccessible declarations", () => {
+  const result = sanitize({
+    generatedHtml: "<main><h1>Safe document</h1><p>Readable content for the generated view.</p></main>",
+    generatedCss: `
+      body { background: url(https://example.test/track); }
+      .hero { display: grid; grid-template-columns: 2fr 1fr; background: var(--pf-surface); position: fixed; }
+      .copy { font-size: 10px; line-height: 1; color: #bbbbbb; padding: 2rem; }
+      .safe { font-size: 18px; line-height: 1.6; color: var(--pf-text); }
+      .unsafe-surface { background: var(--pf-accent); }
+    `
+  });
+
+  assert.match(result.generatedCss, /\.custom-document \.hero/);
+  assert.match(result.generatedCss, /grid-template-columns:2fr 1fr/);
+  assert.match(result.generatedCss, /background:var\(--pf-surface\)/);
+  assert.match(result.generatedCss, /font-size:18px/);
+  assert.doesNotMatch(result.generatedCss, /url\(|position:fixed|font-size:10px|line-height:1(?:[;}])|#bbbbbb|unsafe-surface|body/);
+  assert.equal(sanitize(result).generatedCss, result.generatedCss, "CSS sanitation must be idempotent across validation and preview");
+});
+
+test("custom HTML neutralizes active resources before DOM parsing", () => {
+  const result = neutralizeMarkup(`
+    <style>@import "https://tracker.test/style.css";</style>
+    <iframe src="https://tracker.test/frame"></iframe>
+    <main onclick="steal()"><img src="https://tracker.test/pixel" data-pageflow-image="img1"><a href="https://tracker.test">Safe label</a></main>
+  `);
+
+  assert.doesNotMatch(result, /https?:|<style|<iframe|onclick=|\ssrc=|\shref=/i);
+  assert.match(result, /data-pageflow-image="img1"/);
+  assert.match(result, /Safe label/);
+});
+
 test("popup and content script default schemas remain identical", () => {
   const contentContext = { schema: "" };
   vm.createContext(contentContext);
@@ -97,7 +137,7 @@ test("every trusted registry feature has a boolean state flag and AI schema entr
   });
 });
 
-test("Claude adapter carries mode and page context without temperature", async () => {
+test("Claude adapter carries custom mode and page context without temperature", async () => {
   let listener;
   let requestBody;
   const context = {
@@ -140,8 +180,9 @@ test("Claude adapter carries mode and page context without temperature", async (
               summary: "A rebuilt reading page",
               settings: {
                 viewMode: "rebuild",
-                rebuildLayout: "reading",
-                pageSearch: true
+                rebuildLayout: "custom",
+                generatedHtml: "<main><h1>Introduction</h1><p>Generated layout content.</p></main>",
+                generatedCss: ".layout { display: grid; }"
               }
             })
           }]
@@ -155,8 +196,8 @@ test("Claude adapter carries mode and page context without temperature", async (
   const response = await new Promise((resolve) => {
     listener({
       type: "PAGEFLOW_AI_REQUEST",
-      prompt: "Rebuild this article",
-      requestedMode: "rebuild",
+      prompt: "Create a unique editorial page",
+      requestedMode: "custom",
       currentState: {},
       pageContext: { paragraphs: [{ id: "p1", text: "Introduction" }] }
     }, null, resolve);
@@ -164,8 +205,9 @@ test("Claude adapter carries mode and page context without temperature", async (
 
   assert.equal(response.ok, true);
   assert.equal(response.plan.settings.viewMode, "rebuild");
-  assert.equal(requestBody.max_tokens, 2400);
+  assert.equal(response.plan.settings.rebuildLayout, "custom");
+  assert.equal(requestBody.max_tokens, 8000);
   assert.equal(requestBody.temperature, undefined);
-  assert.match(requestBody.messages[0].content[0].text, /Requested mode: rebuild/);
+  assert.match(requestBody.messages[0].content[0].text, /Requested mode: custom/);
   assert.match(requestBody.messages[0].content[0].text, /Introduction/);
 });

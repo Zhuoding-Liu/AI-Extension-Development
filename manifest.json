@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PageFlow AI",
-  "version": "1.4.0",
-  "description": "Adapt existing pages or preview isolated AI-rebuilt reading views with a registry of trusted accessibility and reading tools.",
+  "version": "1.5.0",
+  "description": "Adapt pages, use trusted reading views, or preview sanitized AI-generated HTML and CSS with accessibility safeguards.",
   "permissions": ["storage", "activeTab"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {

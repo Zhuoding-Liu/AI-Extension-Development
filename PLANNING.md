@@ -17,7 +17,7 @@ PageFlow AI is a Chrome and Edge extension that helps users improve webpage appe
 
 ## 3. Current baseline
 
-The current `1.4.0` development version provides:
+The current `1.5.0` development version provides:
 
 - Original, Warm, and Contrast themes
 - image hiding and grayscale images
@@ -34,6 +34,7 @@ The current `1.4.0` development version provides:
 - AI proposal review with Apply, Dismiss, and session Undo
 - Adapt and isolated Rebuild Preview modes
 - Reading, Magazine, and Cards rebuild layouts
+- a sanitized AI Custom HTML mode with semantic page content, prompt-specific HTML/CSS, isolated rendering, and accessibility guards
 - a trusted feature registry covering navigation, content aids, media, accessibility, audits, and region controls
 - strict boolean/range validation, transactional state persistence, and a 30-second AI request timeout
 - dependency-free automated schema and Claude-adapter tests
@@ -49,7 +50,7 @@ Popup prompt
     -> content-script.js validation
     -> popup review
     -> content-script.js validation
-    -> Adapt renderer or isolated Rebuild preview
+    -> Adapt renderer, preset Rebuild, or isolated Custom HTML preview
     -> Keep or Discard confirmation
 ```
 
@@ -97,7 +98,7 @@ When no API endpoint is configured, the prompt field uses local keyword rules in
 ### Out of scope until reviewed
 
 - Executing AI-generated JavaScript
-- Injecting arbitrary AI-generated HTML or CSS
+- Injecting unsanitized AI-generated HTML or CSS into the source page
 - Sending complete page HTML to the model
 - Collecting passwords, form values, cookies, or tokens
 - Automatically submitting forms, purchases, or messages
@@ -119,7 +120,8 @@ When no API endpoint is configured, the prompt field uses local keyword rules in
 - Return a concise user-facing response.
 - Return only supported setting fields.
 - Reject or sanitize unsupported values.
-- Never return executable page code.
+- Never execute model-generated JavaScript or event handlers.
+- Accept custom HTML/CSS only in the isolated mode and sanitize it before every preview.
 - Allow confirmation before meaningful changes.
 
 ### Persistence
@@ -184,7 +186,7 @@ The extension owns the UI, quick controls, minimal page-context collection, stat
 - Use HTTPS for every production backend request.
 - Send only data required for customization.
 - Treat webpage content as untrusted input.
-- Never execute model-provided code.
+- Never execute model-provided JavaScript; generated declarative HTML/CSS must pass allowlist sanitation and remain isolated.
 - Validate model output in both backend and content script.
 - Restrict host permissions to the minimum practical scope.
 - Add authentication and per-user quotas before public release.
@@ -247,6 +249,8 @@ Status: Planned
 - [x] Add simplified tables, image viewer, and video visibility.
 - [x] Add Dyslexia-friendly, Low Vision, keyboard navigation, form audit, and region visibility modules.
 - [x] Add Reading, Magazine, and Cards rebuild layouts.
+- [x] Add isolated AI Custom HTML with semantic content mapping and scoped CSS.
+- [x] Add minimum typography and contrast protections for generated layouts.
 - [ ] Evaluate a dedicated Study preset.
 - [ ] Add localized natural-language support.
 
@@ -271,6 +275,7 @@ Status: Planned
 - Restore every default value on reset.
 - Verify local prompt rules produce the expected patch.
 - Show a visible error for malformed API output.
+- Reject generated CSS URLs, fixed overlays, hidden content, unsafe colors, and undersized body text.
 
 ### Extension integration tests
 
@@ -298,6 +303,7 @@ Status: Planned
 - Reject non-HTTP API URLs.
 - Reject unsupported response fields and invalid values.
 - Test request-size, rate-limit, authentication, and CORS failures.
+- Verify generated documents remove scripts, forms, event attributes, external URLs, and unsupported image references.
 
 ## 13. Acceptance criteria
 
@@ -318,7 +324,7 @@ An AI customization feature is complete when:
 | API key exposure | Keep keys on an authenticated backend |
 | Invalid model output | Use structured output and validate twice |
 | Prompt injection | Send minimal context and treat it as untrusted |
-| Website CSS conflicts | Use scoped classes, CSS variables, and tested presets |
+| Website CSS conflicts | Use Shadow DOM isolation, scoped generated selectors, CSS variables, and tested presets |
 | Excessive permissions | Request optional origins only when needed |
 | AI service outage | Keep quick controls and local rules functional |
 | Unexpected API cost | Add quotas, rate limits, and spend alerts |
