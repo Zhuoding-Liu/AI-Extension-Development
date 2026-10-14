@@ -303,6 +303,7 @@ async function requestAiFromPopup(text, pageContext) {
   const parsed = await chrome.runtime.sendMessage({
     type: "PAGEFLOW_AI_PARSE",
     provider: prepared.provider,
+    requestedMode,
     status: response.status,
     rawText
   });

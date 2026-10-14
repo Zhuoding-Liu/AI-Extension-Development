@@ -74,7 +74,7 @@ The rebuilt page now includes **Use original page** and an **Original page contr
 
 Custom HTML is bound to the page path where it was generated. Following a link to a different path keeps the original site usable; generate a new custom design for that page if needed. Preset Rebuild views can still rebuild new pages from their current content.
 
-Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. They may take longer than preset changes, so the extension allows up to 180 seconds and shows progress messages while Claude produces the complete JSON, HTML, and CSS response. Adapt and preset Rebuild requests allow up to 90 seconds. Very long page models are reduced at complete block boundaries, so the model always receives valid JSON. Keep the popup open until the request finishes; the popup performs the network request to avoid the background service worker's fetch-response timeout.
+Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. They may take longer than preset changes, so the extension allows up to 180 seconds and shows progress messages while Claude produces a complete HTML document. Unlike Adapt and preset Rebuild, AI Custom HTML no longer requires the entire document to be escaped inside a JSON string. Adapt and preset Rebuild requests allow up to 90 seconds. Very long page models are reduced at complete block boundaries, so the model receives valid page-context JSON. Keep the popup open until the request finishes; the popup performs the network request to avoid the background service worker's fetch-response timeout.
 
 Example custom request:
 
@@ -220,7 +220,7 @@ Prompt field
     -> content-script.js analyzes the rendered page
     -> service-worker.js prepares the validated request
     -> popup.js calls the configured OpenAI-compatible or Claude endpoint
-    -> service-worker.js parses the JSON design proposal
+    -> service-worker.js parses a JSON proposal or a complete Custom HTML document
     -> content-script.js validation
     -> popup review (Apply or Dismiss)
     -> content-script.js validation
@@ -232,7 +232,7 @@ The extension sends the user's request, selected mode, current PageFlow settings
 
 In Custom mode, the returned full document is parsed without activating it. Scripts, event-handler attributes, nested frames, external links, unknown image URLs, and navigation-capable metadata are removed. The result is rendered in a sandboxed, opaque-origin iframe with a restrictive Content Security Policy; generated CSS remains inside that frame rather than touching the source website. A small extension-owned bridge lets mapped controls reveal and focus the corresponding live original-page control, without clicking or submitting it. If a website's security policy blocks that bridge, use the toolbar's **Original controls** or **Use original page** action. Form fields and native HTML widgets can appear in the preview, but form submission and model-generated JavaScript are disabled. Review visual contrast and text size before keeping an AI design; arbitrary CSS is no longer constrained to a preset accessibility palette.
 
-The model is instructed to return a JSON object. A typical response looks like:
+For Adapt and preset Rebuild, the model returns a JSON object. A typical response looks like:
 
 ```json
 {
@@ -252,6 +252,8 @@ The model is instructed to return a JSON object. A typical response looks like:
   }
 }
 ```
+
+For AI Custom HTML, the model returns a complete `<!doctype html>... </html>` document directly. The extension checks that the document is complete and within the 40,000-character limit before passing it to the existing safety validation and isolated preview. Previously generated JSON-wrapped Custom HTML responses remain accepted for compatibility.
 
 ## API key security
 
@@ -289,11 +291,11 @@ Check API billing, available credits, project limits, and rate limits.
 
 ### The AI did not return valid JSON settings
 
-The model response was not valid JSON in the format expected by `service-worker.js`. Try a simpler page-customization request or use a compatible model or proxy.
+This error applies to Adapt and preset Rebuild only: the model response was not valid JSON in the format expected by `service-worker.js`. AI Custom HTML uses a separate HTML response format and reports missing or incomplete HTML directly. A short user prompt can still produce a large model response.
 
 ### The AI response was cut off by the model output limit
 
-The generated design was too long for one model response. Try a more focused prompt or a shorter page. The extension rejects incomplete JSON rather than applying a partial design.
+The generated design was too long for one model response. Try a more focused prompt or a shorter page. The extension rejects incomplete JSON or HTML rather than applying a partial design.
 
 ### Could not reach the AI endpoint
 

@@ -213,6 +213,8 @@ test("Claude adapter prepares custom mode and page context without temperature",
   assert.equal(response.requestBody.max_tokens, 8000);
   assert.equal(response.timeoutMs, 180000);
   assert.equal(response.requestBody.temperature, undefined);
+  assert.match(response.requestBody.system, /Return only one complete HTML document/);
+  assert.match(response.requestBody.system, /Do not return JSON/);
   assert.match(response.requestBody.messages[0].content[0].text, /Requested mode: custom/);
   assert.match(response.requestBody.messages[0].content[0].text, /Introduction/);
   assert.doesNotMatch(response.requestBody.messages[0].content[0].text, /DUPLICATE_/);
@@ -220,14 +222,69 @@ test("Claude adapter prepares custom mode and page context without temperature",
   let parsed;
   listener({
     type: "PAGEFLOW_AI_PARSE",
-    provider: "anthropic",
+    provider: "anthropic", requestedMode: "custom",
     status: 200,
     rawText: JSON.stringify({ content: [{ type: "text", text: JSON.stringify({
-      summary: "A rebuilt reading page", settings: { viewMode: "rebuild", rebuildLayout: "custom" }
+      summary: "A rebuilt reading page", settings: {
+        viewMode: "rebuild", rebuildLayout: "custom",
+        generatedHtml: "<!doctype html><html><head></head><body><main>Legacy page</main></body></html>"
+      }
     }) }] })
   }, null, (value) => { parsed = value; });
   assert.equal(parsed.ok, true);
   assert.equal(parsed.plan.settings.rebuildLayout, "custom");
+});
+
+test("AI Custom HTML accepts a complete raw document without JSON escaping", () => {
+  let listener;
+  const context = {
+    chrome: {
+      runtime: { onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } } }
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(workerSource, context);
+  const html = '<!doctype html><html lang="en"><head><title>Comfortable reading</title><style>body { font-size: 115%; }</style></head><body><aside>Contents</aside><main><h1>Article</h1></main></body></html>';
+  let result;
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", requestedMode: "custom", status: 200,
+    rawText: JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: html }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.settings.generatedHtml, html);
+  assert.equal(result.plan.settings.rebuildLayout, "custom");
+  assert.equal(result.plan.settings.viewMode, "rebuild");
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", requestedMode: "custom", status: 200,
+    rawText: JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: `Here is the page:\n\`\`\`html\n${html}\n\`\`\`` }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.settings.generatedHtml, html);
+});
+
+test("AI Custom HTML reports an incomplete document instead of a JSON-settings error", () => {
+  let listener;
+  const context = {
+    chrome: {
+      runtime: { onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } } }
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(workerSource, context);
+  let result;
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", requestedMode: "custom", status: 200,
+    rawText: JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: "<html><body><main>Incomplete" }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /complete HTML page/);
+  assert.doesNotMatch(result.error, /JSON settings/);
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", requestedMode: "custom", status: 200,
+    rawText: JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: '{"settings":{"generatedHtml":"<html>"' }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /malformed JSON instead of a complete HTML page/);
 });
 
 test("AI JSON parser accepts a wrapped object with braces inside strings", () => {
@@ -300,16 +357,19 @@ test("Claude output-limit errors are reported before attempting JSON parsing", a
 test("AI network request runs in the popup, not the service worker", async () => {
   let calledUrl;
   let timeoutDelay;
+  let parsedMode;
   const context = {
     currentState: {},
     requestedMode: "adapt",
     AbortController,
     setTimeout(_callback, delay) { timeoutDelay = delay; return 1; },
     clearTimeout() {},
-    chrome: { runtime: { sendMessage: async (message) => message.type === "PAGEFLOW_AI_PREPARE"
-      ? { ok: true, configured: true, provider: "anthropic", endpoint: "https://api.anthropic.com/v1/messages",
-        headers: { "x-api-key": "test-only" }, requestBody: { model: "claude-test" }, timeoutMs: 90000 }
-      : { ok: true, plan: { summary: "Larger text", settings: { fontScale: 115 } } } } },
+    chrome: { runtime: { sendMessage: async (message) => {
+      if (message.type === "PAGEFLOW_AI_PREPARE") return { ok: true, configured: true, provider: "anthropic", endpoint: "https://api.anthropic.com/v1/messages",
+        headers: { "x-api-key": "test-only" }, requestBody: { model: "claude-test" }, timeoutMs: 90000 };
+      parsedMode = message.requestedMode;
+      return { ok: true, plan: { summary: "Larger text", settings: { fontScale: 115 } } };
+    } } },
     fetch: async (url, request) => {
       calledUrl = url;
       assert.ok(request.signal);
@@ -326,6 +386,7 @@ test("AI network request runs in the popup, not the service worker", async () =>
   const result = await context.result;
   assert.equal(calledUrl, "https://api.anthropic.com/v1/messages");
   assert.equal(timeoutDelay, 90000);
+  assert.equal(parsedMode, "adapt");
   assert.equal(result.plan.settings.fontScale, 115);
 });
 
