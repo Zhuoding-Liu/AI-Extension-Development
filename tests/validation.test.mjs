@@ -5,6 +5,7 @@ import vm from "node:vm";
 
 const contentSource = await readFile(new URL("../content-script.js", import.meta.url), "utf8");
 const popupSource = await readFile(new URL("../popup.js", import.meta.url), "utf8");
+const popupHtmlSource = await readFile(new URL("../popup.html", import.meta.url), "utf8");
 const workerSource = await readFile(new URL("../service-worker.js", import.meta.url), "utf8");
 const optionsSource = await readFile(new URL("../options.js", import.meta.url), "utf8");
 
@@ -77,7 +78,7 @@ test("generated page scope accepts only a path without query or fragment", () =>
   assert.equal(sanitize({ generatedPagePath: "/articles/example?token=secret" }).generatedPagePath, "");
 });
 
-test("custom CSS keeps layout freedom while rejecting unsafe and inaccessible declarations", () => {
+test("preset CSS sanitizer still rejects unsafe and inaccessible declarations", () => {
   const result = sanitize({
     generatedHtml: "<main><h1>Safe document</h1><p>Readable content for the generated view.</p></main>",
     generatedCss: `
@@ -97,7 +98,17 @@ test("custom CSS keeps layout freedom while rejecting unsafe and inaccessible de
   assert.equal(sanitize(result).generatedCss, result.generatedCss, "CSS sanitation must be idempotent across validation and preview");
 });
 
-test("custom HTML neutralizes active resources before DOM parsing", () => {
+test("AI Custom HTML keeps full-page CSS without the preset declaration allowlist", () => {
+  const css = "@media (max-width: 800px) { body { background: linear-gradient(#fff, #eee); } } .hero { position: sticky; top: 0; }";
+  const html = "<!doctype html><html><head><title>New design</title></head><body><main><h1>New page</h1></main></body></html>";
+  const result = sanitize({ viewMode: "rebuild", rebuildLayout: "custom", generatedHtml: html, generatedCss: css });
+  assert.equal(result.generatedHtml, html);
+  assert.equal(result.generatedCss, css);
+  assert.equal(sanitize(result).generatedCss, css);
+  assert.match(workerSource, /complete, prompt-specific standalone HTML document/);
+});
+
+test("legacy fragment sanitizer neutralizes active resources before DOM parsing", () => {
   const result = neutralizeMarkup(`
     <style>@import "https://tracker.test/style.css";</style>
     <iframe src="https://tracker.test/frame"></iframe>
@@ -126,6 +137,11 @@ test("popup and content script default schemas remain identical", () => {
   );
 
   assert.equal(popupContext.schema, contentContext.schema);
+});
+
+test("the popup keeps exactly the existing three modes", () => {
+  const modes = Array.from(popupHtmlSource.matchAll(/data-ai-mode="([^"]+)"/g), (match) => match[1]);
+  assert.deepEqual(modes, ["adapt", "rebuild", "custom"]);
 });
 
 test("every trusted registry feature has a boolean state flag and AI schema entry", () => {

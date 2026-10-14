@@ -88,6 +88,7 @@ let progressScrollHandler = null;
 let imageViewerHandler = null;
 let keyboardNavigationHandler = null;
 let pendingRebuildState = null;
+let customFrameBridge = null;
 const pageControlIds = new WeakMap();
 const pageControlTargets = new Map();
 let nextPageControlId = 0;
@@ -293,7 +294,9 @@ function sanitizeState(candidate = {}) {
     glossaryItems: sanitizeGlossaryItems(candidate.glossaryItems),
     paragraphTranslations: sanitizeParagraphTranslations(candidate.paragraphTranslations),
     generatedHtml: sanitizeGeneratedSource(candidate.generatedHtml, 40000),
-    generatedCss: sanitizeGeneratedCss(candidate.generatedCss),
+    generatedCss: candidate.rebuildLayout === "custom"
+      ? sanitizeGeneratedSource(candidate.generatedCss, 20000)
+      : sanitizeGeneratedCss(candidate.generatedCss),
     generatedPagePath: sanitizeGeneratedPagePath(candidate.generatedPagePath)
   };
 }
@@ -1124,22 +1127,123 @@ function sanitizeGeneratedMarkup(source, data) {
   };
 }
 
+function prepareSandboxedPage(state, data) {
+  if (!state.generatedHtml.trim()) throw new Error("The AI did not return an HTML page.");
+  // Remove URL-bearing attributes before inert parsing; even inert documents can load images.
+  const source = state.generatedHtml.replace(/\s(?:src|srcset|imagesrcset|href|xlink:href|poster|data|action|formaction|background|cite|ping|srcdoc)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, (attribute) => {
+    return /^\s+href\s*=\s*["']?#[a-z][a-z0-9_-]{0,80}["']?$/i.test(attribute) ? attribute : "";
+  });
+  const parsed = new DOMParser().parseFromString(source, "text/html");
+  if (!/<html\b/i.test(state.generatedHtml)) {
+    // Previously saved Custom HTML fragments still need their old scoped selectors.
+    parsed.body.classList.add("custom-document");
+    parsed.body.style.setProperty("--pf-background", state.customBackground || "#fbfaf7");
+    parsed.body.style.setProperty("--pf-text", state.customText || "#25232a");
+    parsed.body.style.setProperty("--pf-accent", state.customAccent || "#6950b8");
+    parsed.body.style.setProperty("--pf-surface", state.customBackground || "#fbfaf7");
+    parsed.body.style.setProperty("--pf-muted", state.customText || "#25232a");
+  }
+  parsed.querySelectorAll("script, iframe, frame, frameset, object, embed, portal, applet, link, base, meta[http-equiv]")
+    .forEach((element) => element.remove());
+  const imageMap = new Map(data.groups.flatMap((group) => group.blocks)
+    .filter((block) => block.type === "image" && block.imageId && block.src)
+    .map((block) => [block.imageId, block]));
+  const imageOrigins = new Set();
+
+  parsed.querySelectorAll("*").forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith("on") || ["src", "srcset", "imagesrcset", "poster", "data", "action", "formaction", "background", "cite", "ping", "srcdoc", "xlink:href", "xml:base"].includes(name)) {
+        element.removeAttribute(attribute.name);
+      } else if (name === "href" && (element.tagName !== "A" || !/^#[a-z][a-z0-9_-]{0,80}$/i.test(attribute.value))) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+    if (element.tagName === "IMG") {
+      const block = imageMap.get(element.getAttribute("data-pageflow-image"));
+      if (!block) {
+        element.remove();
+        return;
+      }
+      element.src = block.src;
+      element.alt = cleanContextText(element.alt || block.alt || "Page image", 180);
+      element.loading = "lazy";
+      element.referrerPolicy = "no-referrer";
+      try {
+        const origin = new URL(block.src).origin;
+        if (/^https?:\/\//.test(origin)) imageOrigins.add(origin);
+      } catch {
+        // Data and blob images use their scheme allowance below.
+      }
+    }
+    if (element.hasAttribute("data-pageflow-control") && !/^c\d{1,5}$/.test(element.getAttribute("data-pageflow-control"))) {
+      element.removeAttribute("data-pageflow-control");
+    }
+    if (element.tagName === "A") {
+      const targetId = element.getAttribute("data-pageflow-target");
+      if (targetId && /^[a-z][a-z0-9_-]{0,80}$/i.test(targetId) && parsed.getElementById(targetId)) {
+        element.href = `#${targetId}`;
+      }
+    }
+  });
+  if (!parsed.body.children.length && !parsed.body.textContent.trim()) {
+    throw new Error("The generated HTML page has no visible content.");
+  }
+
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const csp = parsed.createElement("meta");
+  csp.httpEquiv = "Content-Security-Policy";
+  csp.content = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: blob: ${Array.from(imageOrigins).join(" ")}; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; form-action 'none'; base-uri 'none'`;
+  parsed.head.prepend(csp);
+  const charset = parsed.createElement("meta");
+  charset.setAttribute("charset", "utf-8");
+  parsed.head.prepend(charset);
+  const viewport = parsed.createElement("meta");
+  viewport.name = "viewport";
+  viewport.content = "width=device-width, initial-scale=1";
+  parsed.head.appendChild(viewport);
+  const extraStyle = parsed.createElement("style");
+  extraStyle.textContent = state.generatedCss.replace(/</g, "\\3C ");
+  parsed.head.appendChild(extraStyle);
+  const focusStyle = parsed.createElement("style");
+  focusStyle.textContent = ":focus-visible{outline:3px solid #7654dc!important;outline-offset:3px!important} img{max-width:100%}";
+  parsed.head.appendChild(focusStyle);
+  parsed.querySelectorAll("style").forEach((style) => {
+    style.textContent = style.textContent.replace(/</g, "\\3C ");
+  });
+  const bridge = parsed.createElement("script");
+  bridge.setAttribute("nonce", nonce);
+  bridge.textContent = `
+    const pageflowToken = ${JSON.stringify(nonce)};
+    parent.postMessage({type: 'PAGEFLOW_CUSTOM_READY', token: pageflowToken}, '*');
+    try {
+      document.addEventListener('click', (event) => {
+        const control = event.target.closest('[data-pageflow-control]');
+        if (!control) return;
+        event.preventDefault();
+        parent.postMessage({type: 'PAGEFLOW_CUSTOM_CONTROL', token: pageflowToken, id: control.getAttribute('data-pageflow-control')}, '*');
+      }, true);
+      document.addEventListener('submit', (event) => event.preventDefault(), true);
+      window.addEventListener('scroll', () => {
+        const height = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+        parent.postMessage({type: 'PAGEFLOW_CUSTOM_SCROLL', token: pageflowToken, percent: Math.min(100, Math.max(0, scrollY / height * 100))}, '*');
+      }, {passive: true});
+      window.addEventListener('message', (event) => {
+        if (event.source !== parent || event.data?.token !== pageflowToken) return;
+        if (event.data.type === 'PAGEFLOW_CUSTOM_TOP') scrollTo({top: 0, behavior: 'smooth'});
+        if (event.data.type === 'PAGEFLOW_CUSTOM_PING') parent.postMessage({type: 'PAGEFLOW_CUSTOM_READY', token: pageflowToken}, '*');
+      });
+    } catch (error) {
+      parent.postMessage({type: 'PAGEFLOW_CUSTOM_BRIDGE_ERROR', token: pageflowToken, error: String(error)}, '*');
+    }
+  `;
+  parsed.head.appendChild(bridge);
+  return { html: `<!doctype html>${parsed.documentElement.outerHTML}`, token: nonce };
+}
+
 function validateCustomDocumentState(state, data = null) {
   if (state.viewMode !== "rebuild" || state.rebuildLayout !== "custom") return null;
-  if (!state.generatedHtml.trim()) throw new Error("Claude did not return custom HTML for this design.");
-  const sourceData = data || extractRebuildDocument(state);
-  const result = sanitizeGeneratedMarkup(state.generatedHtml, sourceData);
-  const sourceTextLength = sourceData.groups.flatMap((group) => [group.heading, ...group.blocks.flatMap((block) => {
-    if (block.text) return [block.text];
-    if (block.items) return block.items;
-    if (block.rows) return block.rows.flat();
-    return [];
-  })]).join(" ").length;
-  const minimumTextLength = Math.min(2000, Math.max(120, Math.floor(sourceTextLength * 0.25)));
-  if (result.textLength < minimumTextLength || result.elementCount < 3 || !result.headingCount || !result.landmarkCount) {
-    throw new Error("The generated document did not contain enough safe page content.");
-  }
-  return result;
+  return prepareSandboxedPage(state, data || extractRebuildDocument(state));
 }
 
 function parseRenderedColor(value) {
@@ -1332,7 +1436,151 @@ function showOriginalPage(rebuildHost, target = null) {
   }
 }
 
+function renderCustomPageView(state, preview = false) {
+  if (!document.body) return;
+  if (state.generatedPagePath && state.generatedPagePath !== location.pathname) {
+    customFrameBridge?.abort();
+    customFrameBridge = null;
+    document.getElementById("pageflow-original-host")?.remove();
+    document.getElementById("pageflow-rebuild-host")?.remove();
+    return;
+  }
+  const page = validateCustomDocumentState(state);
+  customFrameBridge?.abort();
+  customFrameBridge = null;
+  document.getElementById("pageflow-original-host")?.remove();
+  document.getElementById("pageflow-rebuild-host")?.remove();
+  const originalControls = collectPageControls();
+  const host = document.createElement("div");
+  host.id = "pageflow-rebuild-host";
+  const shadow = host.attachShadow({ mode: "open" });
+  const shell = document.createElement("div");
+  shell.className = "shell";
+  const toolbar = document.createElement("header");
+  toolbar.className = "toolbar";
+  const status = document.createElement("span");
+  status.textContent = preview ? "AI Custom HTML preview — original page is unchanged" : "AI Custom HTML view";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const exit = document.createElement("button");
+  exit.type = "button";
+  exit.textContent = preview ? "Discard" : "Exit rebuild";
+  exit.addEventListener("click", async () => {
+    if (preview) {
+      pendingRebuildState = null;
+      setOriginalPageVisible(false);
+      customFrameBridge?.abort();
+      customFrameBridge = null;
+      document.getElementById("pageflow-original-host")?.remove();
+      host.remove();
+      return;
+    }
+    const previous = { ...currentState };
+    const next = sanitizeState({ ...currentState, viewMode: "adapt" });
+    applyState(next);
+    try {
+      await saveState(next);
+    } catch {
+      applyState(previous);
+    }
+  });
+  actions.appendChild(exit);
+  const original = document.createElement("button");
+  original.type = "button";
+  original.textContent = "Use original page";
+  original.addEventListener("click", () => showOriginalPage(host));
+  actions.appendChild(original);
+  if (originalControls.length) {
+    const controls = document.createElement("details");
+    controls.className = "controls";
+    const label = document.createElement("summary");
+    label.textContent = "Original controls";
+    controls.appendChild(label);
+    originalControls.slice(0, 24).forEach((control) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = control.label;
+      button.addEventListener("click", () => showOriginalPage(host, pageControlTargets.get(control.id)));
+      controls.appendChild(button);
+    });
+    actions.appendChild(controls);
+  }
+  if (state.backToTop) {
+    const top = document.createElement("button");
+    top.type = "button";
+    top.textContent = "Back to top";
+    top.addEventListener("click", () => frame.contentWindow?.postMessage({ type: "PAGEFLOW_CUSTOM_TOP", token: page.token }, "*"));
+    actions.appendChild(top);
+  }
+  if (preview) {
+    const keep = document.createElement("button");
+    keep.type = "button";
+    keep.className = "primary";
+    keep.textContent = "Keep this view";
+    keep.addEventListener("click", async () => {
+      const previous = { ...currentState };
+      const next = sanitizeState(pendingRebuildState || state);
+      try {
+        await saveState(next);
+        aiStateHistory.push(previous);
+        if (aiStateHistory.length > 5) aiStateHistory.shift();
+        pendingRebuildState = null;
+        applyState(next);
+      } catch {
+        status.textContent = "Could not save this view.";
+      }
+    });
+    actions.appendChild(keep);
+  }
+  toolbar.append(status, actions);
+  const frame = document.createElement("iframe");
+  frame.className = "generated-page";
+  frame.title = "AI-generated page preview";
+  frame.setAttribute("sandbox", "allow-scripts");
+  frame.referrerPolicy = "no-referrer";
+  frame.addEventListener("load", () => {
+    frame.contentWindow?.postMessage({ type: "PAGEFLOW_CUSTOM_PING", token: page.token }, "*");
+  });
+  shell.append(toolbar, frame);
+  let progress = null;
+  if (state.readingProgress || state.readingTime) {
+    progress = document.createElement("span");
+    progress.className = "progress";
+    shell.appendChild(progress);
+  }
+  const style = document.createElement("style");
+  style.textContent = `
+    :host{all:initial;position:fixed;inset:0;z-index:2147483647;font:14px Arial,sans-serif}
+    *{box-sizing:border-box}.shell{position:absolute;inset:0;background:#fbfaf7}
+    .toolbar{height:52px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 14px;background:#17151d;color:#fff}
+    .toolbar span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .actions{display:flex;align-items:center;gap:7px}.toolbar button,.controls summary{border:1px solid #5b5666;border-radius:8px;padding:7px 10px;background:#292630;color:#fff;cursor:pointer;font:12px Arial,sans-serif;white-space:nowrap}
+    .toolbar .primary{background:#7254ec;border-color:#7254ec}.controls{position:relative}.controls summary{list-style:none}.controls summary::-webkit-details-marker{display:none}
+    .controls[open]{position:relative}.controls[open] button{display:block;width:100%;margin:4px 0;text-align:left}.controls[open]::after{content:"";position:absolute;inset:100% 0 auto;z-index:-1}
+    .controls[open]{z-index:2}.controls[open] button{background:#292630}.generated-page{display:block;width:100%;height:calc(100% - 52px);border:0;background:#fff}
+    .progress{position:absolute;top:52px;left:0;height:4px;width:0;background:#7254ec;z-index:3}
+    @media(max-width:700px){.toolbar{height:84px;flex-wrap:wrap;align-content:center;padding:6px 10px}.toolbar span{width:100%}.actions{width:100%;justify-content:flex-end;gap:4px}.toolbar button,.controls summary{padding:5px 6px;font-size:11px}.generated-page{height:calc(100% - 84px)}.progress{top:84px}}
+  `;
+  shadow.append(style, shell);
+  customFrameBridge = new AbortController();
+  window.addEventListener("message", (event) => {
+    if (!host.isConnected || event.source !== frame.contentWindow || event.data?.token !== page.token) return;
+    if (event.data.type === "PAGEFLOW_CUSTOM_CONTROL") {
+      const target = pageControlTargets.get(event.data.id);
+      if (target?.isConnected) showOriginalPage(host, target);
+    } else if (event.data.type === "PAGEFLOW_CUSTOM_SCROLL" && progress) {
+      progress.style.width = `${clamp(event.data.percent, 0, 100, 0)}%`;
+    }
+  }, { signal: customFrameBridge.signal });
+  document.documentElement.appendChild(host);
+  frame.srcdoc = page.html;
+  if (originalPageVisible()) showOriginalPage(host);
+}
+
 function renderRebuildView(state, preview = false) {
+  if (state.rebuildLayout === "custom") return renderCustomPageView(state, preview);
+  customFrameBridge?.abort();
+  customFrameBridge = null;
   document.getElementById("pageflow-original-host")?.remove();
   document.getElementById("pageflow-rebuild-host")?.remove();
   if (!document.body) return;
@@ -1636,6 +1884,8 @@ function reconcileBuiltInFeatures(state) {
     return;
   }
 
+  customFrameBridge?.abort();
+  customFrameBridge = null;
   if (!pendingRebuildState) {
     setOriginalPageVisible(false);
     document.getElementById("pageflow-rebuild-host")?.remove();
@@ -1940,6 +2190,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "PAGEFLOW_VALIDATE_AI_PLAN") {
     try {
+      if (typeof message.patch?.generatedHtml === "string" && message.patch.generatedHtml.length > 40000) {
+        throw new Error("The AI-generated HTML is too long for one page preview. Ask for a more concise design.");
+      }
+      if (typeof message.patch?.generatedCss === "string" && message.patch.generatedCss.length > 20000) {
+        throw new Error("The AI-generated CSS is too long for one page preview. Ask for a more concise design.");
+      }
       const proposedState = sanitizeState({ ...currentState, ...message.patch });
       if (proposedState.viewMode === "rebuild" && proposedState.rebuildLayout === "custom") {
         proposedState.generatedPagePath = sanitizeGeneratedPagePath(location.pathname);
@@ -1986,6 +2242,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "PAGEFLOW_CANCEL_REBUILD_PREVIEW") {
     if (pendingRebuildState) {
+      customFrameBridge?.abort();
+      customFrameBridge = null;
       setOriginalPageVisible(false);
       document.getElementById("pageflow-rebuild-host")?.remove();
       document.getElementById("pageflow-original-host")?.remove();

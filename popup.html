@@ -25,13 +25,13 @@
         <div class="mode-switch" role="group" aria-label="AI page mode">
           <button class="active" type="button" data-ai-mode="adapt" aria-pressed="true"><b>Adapt</b><small>Adjust the existing page</small></button>
           <button type="button" data-ai-mode="rebuild" aria-pressed="false"><b>Rebuild preview</b><small>Create an isolated reading view</small></button>
-          <button type="button" data-ai-mode="custom" aria-pressed="false"><b>AI Custom HTML</b><small>Generate a unique safe layout</small></button>
+          <button type="button" data-ai-mode="custom" aria-pressed="false"><b>AI Custom HTML</b><small>Generate a complete HTML page</small></button>
         </div>
         <div class="prompt-row">
           <textarea id="aiPrompt" rows="2" placeholder="For example: create a calm reading layout with a contents panel"></textarea>
           <button id="applyPrompt" class="send-button" aria-label="Apply smart settings">→</button>
         </div>
-        <p class="hint" id="promptHint">Keep this popup open while AI is generating. Custom HTML links to live page controls; use the original page for forms and dynamic features.</p>
+        <p class="hint" id="promptHint">Keep this popup open while AI is generating. Custom HTML opens in an isolated preview; use the original page for live site actions.</p>
         <div id="aiPlan" class="ai-plan" hidden>
           <strong>Proposed design</strong>
           <p id="aiPlanSummary"></p>

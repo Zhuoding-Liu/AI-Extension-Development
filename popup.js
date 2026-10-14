@@ -331,7 +331,7 @@ async function runSmartPrompt() {
 
     setStatus("Understanding your preferences…");
     if (requestedMode === "custom") {
-      progressTimers.push(setTimeout(() => setStatus("Claude is designing the custom HTML structure…"), 20000));
+      progressTimers.push(setTimeout(() => setStatus("AI is generating the complete HTML page…"), 20000));
       progressTimers.push(setTimeout(() => setStatus("Generating and styling the isolated page…"), 60000));
       progressTimers.push(setTimeout(() => setStatus("This complex page is still processing…"), 120000));
     }
@@ -344,7 +344,7 @@ async function runSmartPrompt() {
       showPlan({ ...response.plan, settings: validation.patch });
       document.getElementById("aiMode").textContent = response.provider === "anthropic" ? "Claude connected" : "AI connected";
     } else {
-      if (requestedMode === "custom") throw new Error("AI Custom HTML requires a connected AI provider.");
+      if (requestedMode === "custom") throw new Error("AI-generated HTML requires a connected AI provider.");
       const patch = settingsForMode(localPromptToPatch(text), requestedMode);
       if (requestedMode === "rebuild") {
         const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch });
@@ -377,7 +377,7 @@ document.querySelectorAll("[data-ai-mode]").forEach((button) => {
     const messages = {
       adapt: "Adapt modifies the existing page after review.",
       rebuild: "Rebuild will open an isolated preset preview before it is saved.",
-      custom: "Claude will generate a sanitized, isolated HTML and CSS preview."
+      custom: "AI will generate a complete HTML page in a sandboxed preview."
     };
     setStatus(messages[requestedMode]);
   });

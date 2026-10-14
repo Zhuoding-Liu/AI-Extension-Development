@@ -2,7 +2,7 @@
 
 PageFlow AI is a build-free Chrome and Edge Manifest V3 extension for adjusting webpage appearance and accessibility. It provides reliable one-click controls, per-website preferences, local natural-language shortcuts, and optional integration with OpenAI-compatible APIs and the native Anthropic Claude Messages API.
 
-Version: `1.5.2`
+Version: `1.6.0`
 
 ## Features
 
@@ -22,7 +22,7 @@ Version: `1.5.2`
 - Review, Apply, Dismiss, and Undo controls for AI proposals
 - Adapt mode for controlled changes to the existing page
 - Rebuild Preview mode that renders a sanitized reading view inside an isolated Shadow DOM without replacing the source page
-- AI Custom HTML mode for prompt-specific semantic HTML and scoped CSS, with tag, attribute, property, URL, font-size, and contrast safeguards
+- AI Custom HTML mode for complete prompt-specific HTML documents and flexible CSS inside a sandboxed preview
 - A trusted Feature Registry for search, reading time, summaries, glossary explanations, paragraph translations, simplified tables, image viewing, video hiding, accessibility modes, keyboard navigation, form audits, and region visibility
 
 The Dark theme is not included in this version.
@@ -64,11 +64,11 @@ When no API endpoint is configured, the popup displays **Local rules**. These co
 
 - **Adapt** applies validated style and trusted-feature settings to the existing page after review.
 - **Rebuild preview** extracts safe text, headings, lists, tables, and selected images into an isolated reading view. The source DOM remains in place. Use **Keep this view** inside the preview to save it, or **Discard** to return without saving.
-- **AI Custom HTML** asks the connected model for a unique semantic document and layout CSS based on the prompt and filtered page content model. It is sanitized, scoped to the isolated preview, and accessibility-guarded before display.
+- **AI Custom HTML** asks the connected model for a complete HTML document and CSS based on your prompt. It is reviewed as a proposal, then shown in an isolated sandboxed preview. The original website remains available.
 
 Rebuild supports Reading, Magazine, and Cards layouts. It never copies scripts, event handlers, forms, or arbitrary page HTML.
 
-Custom HTML supports substantially more structural freedom than the presets: grid, flexbox, multi-column editorial layouts, custom section hierarchy, cards, side notes, visual grouping, local typography, tables, quotes, and mapped page images. It does not support generated JavaScript, forms, external resources, event handlers, or style attributes.
+Custom HTML is no longer restricted to a fixed set of HTML tags, CSS properties, or color variables. It can use a complete document with head and body, inline and head styles, responsive rules, gradients, animation, forms with native controls, SVG, and any ordinary layout structure. The prompt is the primary design specification. Model-provided JavaScript, event handlers, embeds, external resources, and form submission remain disabled; those capabilities cannot safely run with the original website's privileges.
 
 The rebuilt page now includes **Use original page** and an **Original page controls** panel. AI Custom HTML can also place mapped buttons and in-page navigation links. Selecting a mapped button reveals and focuses the matching live control, where you complete the action. A floating **Return to PageFlow view** button restores the design. This preserves access to original forms, menus, media players, and site scripts without copying their code into the generated document. The original page remains available while you navigate within the same browser tab. Controls inside cross-origin iframes or closed Shadow DOM are reached with **Use original page**.
 
@@ -198,8 +198,8 @@ The GenAI service can return only the following page settings:
 | `summaryText` | string | plain text, maximum 1200 characters |
 | `glossaryItems` | array | maximum 16 validated term/definition objects |
 | `paragraphTranslations` | array | maximum 24 validated paragraph-ID/text objects |
-| `generatedHtml` | string | Custom mode only; semantic fragment, maximum 40,000 characters, sanitized before rendering |
-| `generatedCss` | string | Custom mode only; allowlisted scoped rules, maximum 20,000 characters |
+| `generatedHtml` | string | Custom mode only; complete HTML document, maximum 40,000 characters, filtered for active content before preview |
+| `generatedCss` | string | Custom mode only; additional free-form CSS, maximum 20,000 characters, isolated inside the preview |
 
 AI output is sanitized by `content-script.js` before it is displayed for review and again when it is applied.
 
@@ -230,7 +230,7 @@ Prompt field
 
 The extension sends the user's request, selected mode, current PageFlow settings, hostname/path without query parameters, inferred page type, semantic-region statistics, selected redacted section summaries, headings, limited numbered paragraph excerpts in Adapt and preset Rebuild modes, registered feature metadata, basic computed appearance, and a capped semantic content model. The content model contains extracted text, hierarchy, tables, lists, image placeholders, alt text, and labels for up to 40 visible page controls—not the source page HTML, image URLs, link destinations, or input values. It never sends form values, cookies, local storage, query strings, or URL fragments.
 
-In Custom mode, the returned HTML is parsed as an inert document. Scripts, forms, embeds, SVG, inline styles, event attributes, unknown image URLs, and unsupported elements are removed. Generated buttons are retained only when their control ID matches a real original-page control; clicking them shows that control on the live page without triggering its action. CSS is reduced to reviewed layout and presentation properties, prefixed to the generated document, and rendered inside the extension's Shadow DOM. Accessibility rules enforce safe palette contrast, readable body text, heading minimums, and usable line height.
+In Custom mode, the returned full document is parsed without activating it. Scripts, event-handler attributes, nested frames, external links, unknown image URLs, and navigation-capable metadata are removed. The result is rendered in a sandboxed, opaque-origin iframe with a restrictive Content Security Policy; generated CSS remains inside that frame rather than touching the source website. A small extension-owned bridge lets mapped controls reveal and focus the corresponding live original-page control, without clicking or submitting it. If a website's security policy blocks that bridge, use the toolbar's **Original controls** or **Use original page** action. Form fields and native HTML widgets can appear in the preview, but form submission and model-generated JavaScript are disabled. Review visual contrast and text size before keeping an AI design; arbitrary CSS is no longer constrained to a preset accessibility palette.
 
 The model is instructed to return a JSON object. A typical response looks like:
 

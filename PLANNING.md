@@ -17,7 +17,7 @@ PageFlow AI is a Chrome and Edge extension that helps users improve webpage appe
 
 ## 3. Current baseline
 
-The current `1.5.2` development version provides:
+The current `1.6.0` development version provides:
 
 - Original, Warm, and Contrast themes
 - image hiding and grayscale images
@@ -34,10 +34,10 @@ The current `1.5.2` development version provides:
 - AI proposal review with Apply, Dismiss, and session Undo
 - Adapt and isolated Rebuild Preview modes
 - Reading, Magazine, and Cards rebuild layouts
-- a sanitized AI Custom HTML mode with semantic page content, prompt-specific HTML/CSS, isolated rendering, and accessibility guards
+- an AI Custom HTML mode for complete prompt-specific documents and flexible CSS in an opaque-origin sandboxed preview
 - an original-page switch and mapped control links so generated layouts can reach live website functions
 - a trusted feature registry covering navigation, content aids, media, accessibility, audits, and region controls
-- strict boolean/range validation, transactional state persistence, a 30-second standard timeout, and a 180-second Custom HTML timeout
+- strict boolean/range validation, transactional state persistence, a 90-second standard timeout, and a 180-second Custom HTML timeout
 - dependency-free automated schema and Claude-adapter tests
 
 Current AI request flow:
@@ -187,7 +187,7 @@ The extension owns the UI, quick controls, minimal page-context collection, stat
 - Use HTTPS for every production backend request.
 - Send only data required for customization.
 - Treat webpage content as untrusted input.
-- Never execute model-provided JavaScript; generated declarative HTML/CSS must pass allowlist sanitation and remain isolated.
+- Never execute model-provided JavaScript; generated HTML/CSS remains isolated in a sandboxed preview with active content and outbound resources blocked.
 - Validate model output in both backend and content script.
 - Restrict host permissions to the minimum practical scope.
 - Add authentication and per-user quotas before public release.
@@ -250,7 +250,7 @@ Status: Planned
 - [x] Add simplified tables, image viewer, and video visibility.
 - [x] Add Dyslexia-friendly, Low Vision, keyboard navigation, form audit, and region visibility modules.
 - [x] Add Reading, Magazine, and Cards rebuild layouts.
-- [x] Add isolated AI Custom HTML with semantic content mapping and scoped CSS.
+- [x] Let existing AI Custom HTML generate complete documents with flexible CSS in a sandboxed iframe.
 - [x] Add minimum typography and contrast protections for generated layouts.
 - [ ] Evaluate a dedicated Study preset.
 - [ ] Add localized natural-language support.
@@ -325,7 +325,7 @@ An AI customization feature is complete when:
 | API key exposure | Keep keys on an authenticated backend |
 | Invalid model output | Use structured output and validate twice |
 | Prompt injection | Send minimal context and treat it as untrusted |
-| Website CSS conflicts | Use Shadow DOM isolation, scoped generated selectors, CSS variables, and tested presets |
+| Website CSS conflicts | Keep preset views in Shadow DOM and full generated documents inside a sandboxed iframe |
 | Excessive permissions | Request optional origins only when needed |
 | AI service outage | Keep quick controls and local rules functional |
 | Unexpected API cost | Add quotas, rate limits, and spend alerts |
