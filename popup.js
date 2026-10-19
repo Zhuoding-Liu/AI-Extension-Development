@@ -267,48 +267,78 @@ function settingsForMode(settings, mode) {
   return patch;
 }
 
-async function requestAiFromPopup(text, pageContext) {
+async function requestAiFromPopup(text, pageContext, mode = requestedMode, onContinuation = null) {
   const prepared = await chrome.runtime.sendMessage({
     type: "PAGEFLOW_AI_PREPARE",
     prompt: text,
     currentState,
     pageContext,
-    requestedMode
+    requestedMode: mode
   });
   if (!prepared?.ok) throw new Error(prepared?.error || "The AI request could not be prepared.");
   if (!prepared.configured) return prepared;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), prepared.timeoutMs);
-  let response;
-  let rawText;
-  try {
-    response = await fetch(prepared.endpoint, {
-      method: "POST",
-      headers: prepared.headers,
-      body: JSON.stringify(prepared.requestBody),
-      signal: controller.signal
-    });
-    rawText = await response.text();
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new Error(`The AI request timed out after ${prepared.timeoutMs / 1000} seconds. Try a shorter page or request.`);
+  const initialMessages = prepared.requestBody.messages;
+  const maxContinuations = mode === "custom" ? 2 : 0;
+  let requestBody = prepared.requestBody;
+  let previousHtml = "";
+  for (let attempt = 0; attempt <= maxContinuations; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), prepared.timeoutMs);
+    let response;
+    let rawText;
+    try {
+      response = await fetch(prepared.endpoint, {
+        method: "POST",
+        headers: prepared.headers,
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+      rawText = await response.text();
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(`The AI request timed out after ${prepared.timeoutMs / 1000} seconds. Keep the popup open and try a smaller page.`);
+      }
+      throw new Error("Could not reach the AI endpoint. Check its URL, browser permission, and network connection.");
+    } finally {
+      clearTimeout(timeoutId);
     }
-    throw new Error("Could not reach the AI endpoint. Check its URL, browser permission, and network connection.");
-  } finally {
-    clearTimeout(timeoutId);
-  }
-  if (rawText.length > 250000) throw new Error("The AI response was too large to process safely.");
+    if (rawText.length > 250000) throw new Error("The AI response was too large to process safely.");
 
-  const parsed = await chrome.runtime.sendMessage({
-    type: "PAGEFLOW_AI_PARSE",
-    provider: prepared.provider,
-    requestedMode,
-    status: response.status,
-    rawText
-  });
-  if (!parsed?.ok) throw new Error(parsed?.error || "The AI response could not be processed.");
-  return { configured: true, provider: prepared.provider, plan: parsed.plan };
+    const parsed = await chrome.runtime.sendMessage({
+      type: "PAGEFLOW_AI_PARSE",
+      provider: prepared.provider,
+      requestedMode: mode,
+      status: response.status,
+      rawText,
+      previousHtml
+    });
+    if (!parsed?.ok) throw new Error(parsed?.error || "The AI response could not be processed.");
+    if (parsed.plan) return { configured: true, provider: prepared.provider, plan: parsed.plan };
+    if (mode !== "custom" || typeof parsed.continuationText !== "string" ||
+        parsed.continuationText.length <= previousHtml.length) {
+      throw new Error("The AI did not provide enough HTML to continue safely.");
+    }
+    if (attempt === maxContinuations) {
+      throw new Error("The HTML page is still incomplete after three AI responses. No partial page was applied; try a smaller page scope.");
+    }
+    previousHtml = parsed.continuationText;
+    const progressMessage = `AI reached its output limit; continuing the HTML page (${attempt + 1} of ${maxContinuations})…`;
+    if (onContinuation) onContinuation(progressMessage);
+    else setStatus(progressMessage);
+    const continuationPrompt = "Continue the preceding HTML document from the exact next character. Do not repeat or restart it. Return only the remaining HTML, without Markdown or explanation. Close all open tags, including body and html. Keep the entire document under 40,000 characters.";
+    const assistantContent = prepared.provider === "anthropic"
+      ? [{ type: "text", text: previousHtml }]
+      : previousHtml;
+    const userContent = prepared.provider === "anthropic"
+      ? [{ type: "text", text: continuationPrompt }]
+      : continuationPrompt;
+    requestBody = {
+      ...prepared.requestBody,
+      messages: [...initialMessages, { role: "assistant", content: assistantContent }, { role: "user", content: userContent }]
+    };
+  }
+  throw new Error("The AI did not finish the HTML page.");
 }
 
 async function runSmartPrompt() {
@@ -321,6 +351,7 @@ async function runSmartPrompt() {
   }
 
   promptButton.disabled = true;
+  const requestMode = requestedMode;
   hidePlan();
   setStatus("Reading the current page safely…");
   const progressTimers = [];
@@ -331,23 +362,26 @@ async function runSmartPrompt() {
     const pageContext = contextResponse.context || {};
 
     setStatus("Understanding your preferences…");
-    if (requestedMode === "custom") {
+    if (requestMode === "custom") {
       progressTimers.push(setTimeout(() => setStatus("AI is generating the complete HTML page…"), 20000));
       progressTimers.push(setTimeout(() => setStatus("Generating and styling the isolated page…"), 60000));
       progressTimers.push(setTimeout(() => setStatus("This complex page is still processing…"), 120000));
     }
-    const response = await requestAiFromPopup(text, pageContext);
+    const response = await requestAiFromPopup(text, pageContext, requestMode, (message) => {
+      progressTimers.forEach(clearTimeout);
+      setStatus(message);
+    });
 
     if (response.configured) {
-      const proposedSettings = settingsForMode(response.plan?.settings, requestedMode);
+      const proposedSettings = settingsForMode(response.plan?.settings, requestMode);
       const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch: proposedSettings });
       if (!validation?.ok) throw new Error(validation?.error || "The AI design could not be validated.");
       showPlan({ ...response.plan, settings: validation.patch });
       document.getElementById("aiMode").textContent = response.provider === "anthropic" ? "Claude connected" : "AI connected";
     } else {
-      if (requestedMode === "custom") throw new Error("AI-generated HTML requires a connected AI provider.");
-      const patch = settingsForMode(localPromptToPatch(text), requestedMode);
-      if (requestedMode === "rebuild") {
+      if (requestMode === "custom") throw new Error("AI-generated HTML requires a connected AI provider.");
+      const patch = settingsForMode(localPromptToPatch(text), requestMode);
+      if (requestMode === "rebuild") {
         const validation = await sendToPage({ type: "PAGEFLOW_VALIDATE_AI_PLAN", patch });
         showPlan({ summary: "A local rebuild preview using trusted PageFlow features.", settings: validation.patch });
       } else {

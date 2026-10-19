@@ -74,7 +74,7 @@ The rebuilt page now includes **Use original page** and an **Original page contr
 
 Custom HTML is bound to the page path where it was generated. Following a link to a different path keeps the original site usable; generate a new custom design for that page if needed. Preset Rebuild views can still rebuild new pages from their current content.
 
-Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. They may take longer than preset changes, so the extension allows up to 180 seconds and shows progress messages while Claude produces a complete HTML document. Unlike Adapt and preset Rebuild, AI Custom HTML no longer requires the entire document to be escaped inside a JSON string. Adapt and preset Rebuild requests allow up to 90 seconds. Very long page models are reduced at complete block boundaries, so the model receives valid page-context JSON. Keep the popup open until the request finishes; the popup performs the network request to avoid the background service worker's fetch-response timeout.
+Custom requests use a compact semantic content model to avoid sending duplicate page excerpts. Prompts up to 8,000 characters are sent in full; longer prompts are rejected with a clear message rather than silently cut off. AI Custom HTML allows up to 180 seconds per API call and, when a response reaches the model's output limit, can request up to two continuations before accepting a complete document. A complex design can therefore use up to three billable API calls. Unlike Adapt and preset Rebuild, AI Custom HTML does not require the entire document to be escaped inside a JSON string. Adapt and preset Rebuild requests allow up to 90 seconds and still require one complete JSON response. Very long page models are reduced at complete block boundaries, so the model receives valid page-context JSON. Keep the popup open until the request finishes; the popup performs the network request to avoid the background service worker's fetch-response timeout.
 
 Example custom request:
 
@@ -295,7 +295,7 @@ This error applies to Adapt and preset Rebuild only: the model response was not 
 
 ### The AI response was cut off by the model output limit
 
-The generated design was too long for one model response. Try a more focused prompt or a shorter page. The extension rejects incomplete JSON or HTML rather than applying a partial design.
+Adapt and preset Rebuild require one complete JSON response; a truncated response cannot be applied. AI Custom HTML automatically requests up to two continuations, then applies the page only if the final HTML is complete and passes validation. If it is still incomplete after three responses, use a smaller page scope or a model with a higher output allowance. The generated HTML remains capped at 40,000 characters.
 
 ### Could not reach the AI endpoint
 

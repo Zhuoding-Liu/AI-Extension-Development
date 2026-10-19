@@ -233,6 +233,95 @@ test("Claude adapter prepares custom mode and page context without temperature",
   }, null, (value) => { parsed = value; });
   assert.equal(parsed.ok, true);
   assert.equal(parsed.plan.settings.rebuildLayout, "custom");
+
+  const longPrompt = `Keep every requested requirement: ${"accessible navigation and readable content; ".repeat(90)}final instruction`;
+  const longResponse = await new Promise((resolve) => {
+    listener({
+      type: "PAGEFLOW_AI_PREPARE", prompt: longPrompt, requestedMode: "custom",
+      currentState: {}, pageContext: { contentModel: { title: "Article", groups: [] } }
+    }, null, resolve);
+  });
+  assert.equal(longResponse.ok, true);
+  assert.match(longResponse.requestBody.messages[0].content[0].text, /final instruction/);
+  const tooLongResponse = await new Promise((resolve) => {
+    listener({
+      type: "PAGEFLOW_AI_PREPARE", prompt: "x".repeat(8001), requestedMode: "custom",
+      currentState: {}, pageContext: {}
+    }, null, resolve);
+  });
+  assert.equal(tooLongResponse.ok, false);
+  assert.match(tooLongResponse.error, /8,000 characters/);
+});
+
+test("AI Custom HTML continues a truncated response before accepting the complete page", () => {
+  let listener;
+  const context = {
+    chrome: { runtime: { onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } } } }
+  };
+  vm.createContext(context);
+  vm.runInContext(workerSource, context);
+  const beginning = "<!doctype html><html><head><title>Long page</title></head><body><main><p>First paragraph with enough overlap text. ";
+  const ending = "First paragraph with enough overlap text. Second paragraph.</p></main></body></html>";
+  let result;
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", requestedMode: "custom", status: 200,
+    rawText: JSON.stringify({ stop_reason: "max_tokens", content: [{ type: "text", text: beginning }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, true);
+  assert.equal(result.continuationText, beginning);
+  assert.equal(result.plan, undefined);
+
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", requestedMode: "custom", status: 200,
+    previousHtml: result.continuationText,
+    rawText: JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: ending }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.settings.generatedHtml,
+    beginning + "Second paragraph.</p></main></body></html>");
+});
+
+test("OpenAI-compatible Custom HTML can continue a length-limited response", () => {
+  let listener;
+  const context = {
+    chrome: { runtime: { onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } } } }
+  };
+  vm.createContext(context);
+  vm.runInContext(workerSource, context);
+  let result;
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "openai", requestedMode: "custom", status: 200,
+    rawText: JSON.stringify({ choices: [{ finish_reason: "length", message: {
+      content: "<!doctype html><html><head></head><body><main>Start"
+    } }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, true);
+  assert.match(result.continuationText, /<main>Start$/);
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "openai", requestedMode: "custom", status: 200,
+    previousHtml: result.continuationText,
+    rawText: JSON.stringify({ choices: [{ finish_reason: "stop", message: {
+      content: " and finish</main></body></html>"
+    } }] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, true);
+  assert.match(result.plan.settings.generatedHtml, /Start and finish<\/main><\/body><\/html>$/);
+});
+
+test("a model that exhausts its output budget without HTML gets a specific error", () => {
+  let listener;
+  const context = {
+    chrome: { runtime: { onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } } } }
+  };
+  vm.createContext(context);
+  vm.runInContext(workerSource, context);
+  let result;
+  listener({
+    type: "PAGEFLOW_AI_PARSE", provider: "anthropic", requestedMode: "custom", status: 200,
+    rawText: JSON.stringify({ stop_reason: "max_tokens", content: [] })
+  }, null, (value) => { result = value; });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /before returning any page content/);
 });
 
 test("AI Custom HTML accepts a complete raw document without JSON escaping", () => {
@@ -388,6 +477,73 @@ test("AI network request runs in the popup, not the service worker", async () =>
   assert.equal(timeoutDelay, 90000);
   assert.equal(parsedMode, "adapt");
   assert.equal(result.plan.settings.fontScale, 115);
+});
+
+test("popup requests a bounded Claude continuation and never previews the partial HTML", async () => {
+  const partial = "<!doctype html><html><head><title>Article</title></head><body><main>Start ";
+  const complete = `${partial}finished</main></body></html>`;
+  const requests = [];
+  const parses = [];
+  const statuses = [];
+  const context = {
+    currentState: {}, requestedMode: "custom", AbortController,
+    setTimeout() { return 1; }, clearTimeout() {},
+    setStatus(message) { statuses.push(message); },
+    chrome: { runtime: { sendMessage: async (message) => {
+      if (message.type === "PAGEFLOW_AI_PREPARE") return {
+        ok: true, configured: true, provider: "anthropic", endpoint: "https://api.anthropic.com/v1/messages",
+        headers: { "x-api-key": "test-only" }, timeoutMs: 180000,
+        requestBody: { model: "claude-test", max_tokens: 8000,
+          messages: [{ role: "user", content: [{ type: "text", text: "Design the article" }] }] }
+      };
+      parses.push(message);
+      return parses.length === 1
+        ? { ok: true, continuationText: partial }
+        : { ok: true, plan: { summary: "Complete", settings: { generatedHtml: complete } } };
+    } } },
+    fetch: async (_url, request) => {
+      requests.push(JSON.parse(request.body));
+      return { status: 200, text: async () => '{"content":[]}' };
+    },
+    result: null
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    popupSource.slice(popupSource.indexOf("async function requestAiFromPopup"), popupSource.indexOf("async function runSmartPrompt")) +
+      '; result = requestAiFromPopup("Design the article", {});',
+    context
+  );
+  const result = await context.result;
+  assert.equal(requests.length, 2);
+  assert.equal(parses[0].previousHtml, "");
+  assert.equal(parses[1].previousHtml, partial);
+  assert.equal(requests[1].messages[1].role, "assistant");
+  assert.equal(requests[1].messages[1].content[0].text, partial);
+  assert.match(requests[1].messages[2].content[0].text, /Continue the preceding HTML/);
+  assert.equal(result.plan.settings.generatedHtml, complete);
+  assert.equal(statuses.length, 1);
+});
+
+test("popup stops after three incomplete Custom HTML responses", async () => {
+  let requests = 0;
+  const context = {
+    currentState: {}, requestedMode: "custom", AbortController,
+    setTimeout() { return 1; }, clearTimeout() {}, setStatus() {},
+    chrome: { runtime: { sendMessage: async (message) => message.type === "PAGEFLOW_AI_PREPARE"
+      ? { ok: true, configured: true, provider: "anthropic", endpoint: "https://api.anthropic.com/v1/messages",
+        headers: {}, timeoutMs: 180000, requestBody: { messages: [{ role: "user", content: "Design" }] } }
+      : { ok: true, continuationText: `<!doctype html><html><body>${"Partial ".repeat(requests)}` } } },
+    fetch: async () => { requests += 1; return { status: 200, text: async () => "{}" }; },
+    result: null
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    popupSource.slice(popupSource.indexOf("async function requestAiFromPopup"), popupSource.indexOf("async function runSmartPrompt")) +
+      '; result = requestAiFromPopup("Design", {});',
+    context
+  );
+  await assert.rejects(context.result, /still incomplete after three AI responses/);
+  assert.equal(requests, 3);
 });
 
 test("popup reconnects a missing page script once", async () => {
