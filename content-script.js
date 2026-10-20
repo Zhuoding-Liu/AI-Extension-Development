@@ -1127,6 +1127,77 @@ function sanitizeGeneratedMarkup(source, data) {
   };
 }
 
+const CUSTOM_FRAGMENT_ID = /^[a-z][a-z0-9_-]{0,80}$/i;
+
+function normalizeCustomNavigationLabel(value) {
+  return String(value || "").normalize("NFKC").replace(/^\s*\d{1,3}\s*[.):\-]\s*/, "")
+    .toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function chooseCustomNavigationTarget(label, targetId, headings, idOwners) {
+  const current = idOwners.get(targetId);
+  const normalized = normalizeCustomNavigationLabel(label);
+  const matches = normalized ? headings.filter((heading) => heading.label === normalized) : [];
+  if (matches.length === 1) {
+    const heading = matches[0];
+    // A section/container ID is valid when this is its first heading.
+    if (current === heading.element || current?.querySelector("h1, h2, h3, h4, h5, h6") === heading.element) {
+      return targetId;
+    }
+    return heading.id;
+  }
+  if (current) return targetId;
+  const fragmentLabel = normalizeCustomNavigationLabel(targetId.replace(/[_-]/g, " "));
+  const fragmentMatches = fragmentLabel ? headings.filter((heading) => heading.label === fragmentLabel) : [];
+  return fragmentMatches.length === 1 ? fragmentMatches[0].id : "";
+}
+
+function repairCustomPageNavigation(parsed) {
+  const headings = Array.from(parsed.body.querySelectorAll("h1, h2, h3, h4, h5, h6"))
+    .filter((heading) => !heading.closest('nav, aside, header, footer, [role="navigation"], [role="complementary"]'));
+  const idCounts = new Map();
+  parsed.querySelectorAll("[id]").forEach((element) => {
+    idCounts.set(element.id, (idCounts.get(element.id) || 0) + 1);
+  });
+  const usedIds = new Set(idCounts.keys());
+  let nextId = 1;
+  const headingRecords = headings.map((element) => {
+    if (!CUSTOM_FRAGMENT_ID.test(element.id) || idCounts.get(element.id) !== 1) {
+      let id;
+      do {
+        id = `pageflow-section-${nextId++}`;
+      } while (usedIds.has(id));
+      element.id = id;
+      usedIds.add(id);
+    }
+    return { element, id: element.id, label: normalizeCustomNavigationLabel(element.textContent) };
+  });
+  const idOwners = new Map();
+  parsed.querySelectorAll("[id]").forEach((element) => {
+    if (CUSTOM_FRAGMENT_ID.test(element.id) && !idOwners.has(element.id)) idOwners.set(element.id, element);
+  });
+  parsed.body.querySelectorAll("a, button").forEach((element) => {
+    if (element.hasAttribute("data-pageflow-control")) return;
+    const fragment = element.getAttribute("href")?.match(/^#([a-z][a-z0-9_-]{0,80})$/i)?.[1];
+    const dataTarget = element.getAttribute("data-pageflow-target");
+    const targetId = CUSTOM_FRAGMENT_ID.test(dataTarget || "") ? dataTarget : fragment || "";
+    const inNavigation = Boolean(element.closest('nav, aside, [role="navigation"], .sidebar, .toc, .table-of-contents'));
+    if (!targetId && !inNavigation) return;
+    if (!inNavigation && targetId && idOwners.has(targetId)) {
+      element.setAttribute("data-pageflow-target", targetId);
+      return;
+    }
+    const resolved = chooseCustomNavigationTarget(element.textContent || element.getAttribute("aria-label"), targetId, headingRecords, idOwners);
+    if (resolved) {
+      element.setAttribute("data-pageflow-target", resolved);
+      if (element.tagName === "A") element.setAttribute("href", `#${resolved}`);
+    } else {
+      element.removeAttribute("data-pageflow-target");
+      if (fragment) element.removeAttribute("href");
+    }
+  });
+}
+
 function prepareSandboxedPage(state, data) {
   if (!state.generatedHtml.trim()) throw new Error("The AI did not return an HTML page.");
   // Remove URL-bearing attributes before inert parsing; even inert documents can load images.
@@ -1181,11 +1252,12 @@ function prepareSandboxedPage(state, data) {
     }
     if (element.tagName === "A") {
       const targetId = element.getAttribute("data-pageflow-target");
-      if (targetId && /^[a-z][a-z0-9_-]{0,80}$/i.test(targetId) && parsed.getElementById(targetId)) {
+      if (targetId && CUSTOM_FRAGMENT_ID.test(targetId) && parsed.getElementById(targetId)) {
         element.href = `#${targetId}`;
       }
     }
   });
+  repairCustomPageNavigation(parsed);
   if (!parsed.body.children.length && !parsed.body.textContent.trim()) {
     throw new Error("The generated HTML page has no visible content.");
   }
@@ -1218,10 +1290,26 @@ function prepareSandboxedPage(state, data) {
     parent.postMessage({type: 'PAGEFLOW_CUSTOM_READY', token: pageflowToken}, '*');
     try {
       document.addEventListener('click', (event) => {
+        if (!(event.target instanceof Element)) return;
         const control = event.target.closest('[data-pageflow-control]');
-        if (!control) return;
+        if (control) {
+          event.preventDefault();
+          parent.postMessage({type: 'PAGEFLOW_CUSTOM_CONTROL', token: pageflowToken, id: control.getAttribute('data-pageflow-control')}, '*');
+          return;
+        }
+        const link = event.target.closest('a[href^="#"], [data-pageflow-target]');
+        if (!link) return;
+        const id = link.getAttribute('data-pageflow-target') || link.getAttribute('href')?.slice(1);
+        if (!/^[a-z][a-z0-9_-]{0,80}$/i.test(id || '')) return;
+        const target = document.getElementById(id);
+        if (!target) return;
         event.preventDefault();
-        parent.postMessage({type: 'PAGEFLOW_CUSTOM_CONTROL', token: pageflowToken, id: control.getAttribute('data-pageflow-control')}, '*');
+        target.closest('details:not([open])')?.setAttribute('open', '');
+        target.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
+        if (typeof target.focus === 'function') {
+          if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+          target.focus({preventScroll: true});
+        }
       }, true);
       document.addEventListener('submit', (event) => event.preventDefault(), true);
       window.addEventListener('scroll', () => {

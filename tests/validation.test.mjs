@@ -108,6 +108,88 @@ test("AI Custom HTML keeps full-page CSS without the preset declaration allowlis
   assert.match(workerSource, /complete, prompt-specific standalone HTML document/);
 });
 
+test("custom HTML navigation repairs mismatched sidebar links and button targets", () => {
+  const source = contentSource.slice(contentSource.indexOf("const CUSTOM_FRAGMENT_ID"), contentSource.indexOf("function prepareSandboxedPage"));
+  const makeNode = (tagName, textContent, id = "", attributes = {}, inNavigation = false) => ({
+    tagName,
+    textContent,
+    id,
+    attributes: { ...attributes },
+    getAttribute(name) { return this.attributes[name] ?? null; },
+    hasAttribute(name) { return Object.hasOwn(this.attributes, name); },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    removeAttribute(name) { delete this.attributes[name]; },
+    closest() { return inNavigation ? {} : null; },
+    querySelector() { return this.firstHeading || null; }
+  });
+  const introduction = makeNode("H2", "Introduction", "introduction");
+  const pricing = makeNode("H2", "Pricing", "pricing");
+  const faqHeading = makeNode("H2", "Frequently asked questions");
+  const faqSection = makeNode("SECTION", "", "faq");
+  faqSection.firstHeading = faqHeading;
+  const wrongLink = makeNode("A", "2. Pricing", "", { href: "#introduction" }, true);
+  const missingLink = makeNode("A", "Introduction", "", { href: "#missing" }, true);
+  const fragmentMatch = makeNode("A", "Read more", "", { href: "#frequently-asked-questions" }, true);
+  const sidebarButton = makeNode("BUTTON", "Pricing", "", {}, true);
+  const validLink = makeNode("A", "FAQ", "", { href: "#faq" }, true);
+  const unknownLink = makeNode("A", "Unknown section", "", { href: "#nowhere" }, true);
+  const all = [introduction, pricing, faqHeading, faqSection, wrongLink, missingLink, fragmentMatch, sidebarButton, validLink, unknownLink];
+  const headings = [introduction, pricing, faqHeading];
+  const links = [wrongLink, missingLink, fragmentMatch, sidebarButton, validLink, unknownLink];
+  const parsed = {
+    body: { querySelectorAll(selector) { return selector.startsWith("h1") ? headings : links; } },
+    querySelectorAll() { return all.filter((node) => node.id); }
+  };
+  const context = { parsed, result: null, Map, Set, Array, String };
+  vm.createContext(context);
+  vm.runInContext(`${source}; repairCustomPageNavigation(parsed);`, context);
+  assert.equal(wrongLink.getAttribute("href"), "#pricing");
+  assert.equal(missingLink.getAttribute("href"), "#introduction");
+  assert.equal(fragmentMatch.getAttribute("href"), `#${faqHeading.id}`);
+  assert.equal(sidebarButton.getAttribute("data-pageflow-target"), "pricing");
+  assert.equal(validLink.getAttribute("href"), "#faq");
+  assert.equal(unknownLink.getAttribute("href"), null);
+  assert.match(faqHeading.id, /^pageflow-section-\d+$/);
+});
+
+test("custom HTML sandbox bridge scrolls to a sidebar section inside the iframe", () => {
+  const bridge = contentSource.match(/bridge\.textContent = `([\s\S]*?)`;\s*parsed\.head\.appendChild\(bridge\)/)?.[1];
+  assert.ok(bridge, "sandbox bridge script must exist");
+  const listeners = new Map();
+  const target = {
+    scrolled: false,
+    focused: false,
+    closest() { return null; },
+    scrollIntoView(options) { this.scrolled = options.block === "start"; },
+    hasAttribute() { return false; },
+    setAttribute() {},
+    focus() { this.focused = true; }
+  };
+  class ClickElement {
+    closest(selector) { return selector === "[data-pageflow-control]" ? null : this; }
+    getAttribute(name) { return name === "href" ? "#pricing" : null; }
+  }
+  const context = {
+    Element: ClickElement,
+    document: {
+      addEventListener(name, listener) { listeners.set(name, listener); },
+      getElementById(id) { return id === "pricing" ? target : null; },
+      documentElement: { scrollHeight: 1000 }
+    },
+    parent: { postMessage() {} },
+    window: { addEventListener() {} },
+    matchMedia: () => ({ matches: true }),
+    nonce: "test-token"
+  };
+  vm.createContext(context);
+  vm.runInContext(bridge.replace("${JSON.stringify(nonce)}", JSON.stringify("test-token")), context);
+  let prevented = false;
+  listeners.get("click")({ target: new ClickElement(), preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(target.scrolled, true);
+  assert.equal(target.focused, true);
+});
+
 test("legacy fragment sanitizer neutralizes active resources before DOM parsing", () => {
   const result = neutralizeMarkup(`
     <style>@import "https://tracker.test/style.css";</style>
