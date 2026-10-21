@@ -127,7 +127,7 @@ test("custom HTML navigation repairs mismatched sidebar links and button targets
   const faqHeading = makeNode("H2", "Frequently asked questions");
   const faqSection = makeNode("SECTION", "", "faq");
   faqSection.firstHeading = faqHeading;
-  const wrongLink = makeNode("A", "2. Pricing", "", { href: "#introduction" }, true);
+  const wrongLink = makeNode("A", "2. Pricing", "", { href: "#introduction", "data-pageflow-control": "c1" }, true);
   const missingLink = makeNode("A", "Introduction", "", { href: "#missing" }, true);
   const fragmentMatch = makeNode("A", "Read more", "", { href: "#frequently-asked-questions" }, true);
   const sidebarButton = makeNode("BUTTON", "Pricing", "", {}, true);
@@ -144,6 +144,7 @@ test("custom HTML navigation repairs mismatched sidebar links and button targets
   vm.createContext(context);
   vm.runInContext(`${source}; repairCustomPageNavigation(parsed);`, context);
   assert.equal(wrongLink.getAttribute("href"), "#pricing");
+  assert.equal(wrongLink.getAttribute("data-pageflow-control"), null);
   assert.equal(missingLink.getAttribute("href"), "#introduction");
   assert.equal(fragmentMatch.getAttribute("href"), `#${faqHeading.id}`);
   assert.equal(sidebarButton.getAttribute("data-pageflow-target"), "pricing");

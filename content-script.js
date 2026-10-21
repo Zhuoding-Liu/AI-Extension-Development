@@ -964,6 +964,20 @@ function extractRebuildDocument(state) {
   };
 }
 
+function originalControlSection(element) {
+  if (!element.matches("a[href]")) return "";
+  try {
+    const url = new URL(element.href, location.href);
+    const current = new URL(location.href);
+    if (!url.hash || url.origin !== current.origin || url.pathname !== current.pathname || url.search !== current.search) return "";
+    const target = document.getElementById(decodeURIComponent(url.hash.slice(1)));
+    const heading = target?.matches("h1, h2, h3, h4, h5, h6") ? target : target?.querySelector("h1, h2, h3, h4, h5, h6");
+    return cleanContextText(heading?.textContent || target?.getAttribute("aria-label"), 90);
+  } catch {
+    return "";
+  }
+}
+
 function collectPageControls() {
   const selector = "button, a[href], input:not([type='hidden']), select, textarea, [role='button']";
   const primary = document.querySelector("main, article, [role='main']");
@@ -999,7 +1013,8 @@ function collectPageControls() {
     const kind = element.matches("a[href]") ? "link"
       : element.matches("input, select, textarea") && !["button", "submit", "reset"].includes(element.type) ? "field"
         : "button";
-    controls.push({ id, label, kind });
+    const sectionLabel = originalControlSection(element);
+    controls.push({ id, label, kind, ...(sectionLabel ? { sectionLabel } : {}) });
   }
 
   return controls;
@@ -1152,7 +1167,8 @@ function chooseCustomNavigationTarget(label, targetId, headings, idOwners) {
   return fragmentMatches.length === 1 ? fragmentMatches[0].id : "";
 }
 
-function repairCustomPageNavigation(parsed) {
+function repairCustomPageNavigation(parsed, controls = []) {
+  const sourceControls = new Map(controls.map((control) => [control.id, control]));
   const headings = Array.from(parsed.body.querySelectorAll("h1, h2, h3, h4, h5, h6"))
     .filter((heading) => !heading.closest('nav, aside, header, footer, [role="navigation"], [role="complementary"]'));
   const idCounts = new Map();
@@ -1177,18 +1193,27 @@ function repairCustomPageNavigation(parsed) {
     if (CUSTOM_FRAGMENT_ID.test(element.id) && !idOwners.has(element.id)) idOwners.set(element.id, element);
   });
   parsed.body.querySelectorAll("a, button").forEach((element) => {
-    if (element.hasAttribute("data-pageflow-control")) return;
+    const controlId = element.getAttribute("data-pageflow-control");
+    const sectionLabel = sourceControls.get(controlId)?.sectionLabel;
+    // Native generated widgets must keep their own behavior, even on older saved pages.
+    const popoverId = element.getAttribute("popovertarget");
+    if (popoverId && parsed.getElementById(popoverId)) {
+      element.removeAttribute("data-pageflow-control");
+      return;
+    }
     const fragment = element.getAttribute("href")?.match(/^#([a-z][a-z0-9_-]{0,80})$/i)?.[1];
     const dataTarget = element.getAttribute("data-pageflow-target");
     const targetId = CUSTOM_FRAGMENT_ID.test(dataTarget || "") ? dataTarget : fragment || "";
     const inNavigation = Boolean(element.closest('nav, aside, [role="navigation"], .sidebar, .toc, .table-of-contents'));
-    if (!targetId && !inNavigation) return;
+    if (!targetId && !inNavigation && !sectionLabel) return;
     if (!inNavigation && targetId && idOwners.has(targetId)) {
+      element.removeAttribute("data-pageflow-control");
       element.setAttribute("data-pageflow-target", targetId);
       return;
     }
-    const resolved = chooseCustomNavigationTarget(element.textContent || element.getAttribute("aria-label"), targetId, headingRecords, idOwners);
+    const resolved = chooseCustomNavigationTarget(sectionLabel || element.textContent || element.getAttribute("aria-label"), targetId, headingRecords, idOwners);
     if (resolved) {
+      element.removeAttribute("data-pageflow-control");
       element.setAttribute("data-pageflow-target", resolved);
       if (element.tagName === "A") element.setAttribute("href", `#${resolved}`);
     } else {
@@ -1205,6 +1230,8 @@ function prepareSandboxedPage(state, data) {
     return /^\s+href\s*=\s*["']?#[a-z][a-z0-9_-]{0,80}["']?$/i.test(attribute) ? attribute : "";
   });
   const parsed = new DOMParser().parseFromString(source, "text/html");
+  const controls = collectPageControls();
+  const controlIds = new Set(controls.map((control) => control.id));
   if (!/<html\b/i.test(state.generatedHtml)) {
     // Previously saved Custom HTML fragments still need their old scoped selectors.
     parsed.body.classList.add("custom-document");
@@ -1247,7 +1274,7 @@ function prepareSandboxedPage(state, data) {
         // Data and blob images use their scheme allowance below.
       }
     }
-    if (element.hasAttribute("data-pageflow-control") && !/^c\d{1,5}$/.test(element.getAttribute("data-pageflow-control"))) {
+    if (element.hasAttribute("data-pageflow-control") && !controlIds.has(element.getAttribute("data-pageflow-control"))) {
       element.removeAttribute("data-pageflow-control");
     }
     if (element.tagName === "A") {
@@ -1257,7 +1284,11 @@ function prepareSandboxedPage(state, data) {
       }
     }
   });
-  repairCustomPageNavigation(parsed);
+  repairCustomPageNavigation(parsed, controls);
+  parsed.querySelectorAll("[data-pageflow-control]").forEach((element) => {
+    element.setAttribute("title", "Open on the original website in a new tab");
+    if (element.tagName === "BUTTON") element.setAttribute("type", "button");
+  });
   if (!parsed.body.children.length && !parsed.body.textContent.trim()) {
     throw new Error("The generated HTML page has no visible content.");
   }
@@ -1291,24 +1322,23 @@ function prepareSandboxedPage(state, data) {
     try {
       document.addEventListener('click', (event) => {
         if (!(event.target instanceof Element)) return;
+        const link = event.target.closest('a[href^="#"], [data-pageflow-target]');
+        const id = link?.getAttribute('data-pageflow-target') || link?.getAttribute('href')?.slice(1);
+        const target = /^[a-z][a-z0-9_-]{0,80}$/i.test(id || '') ? document.getElementById(id) : null;
+        if (target) {
+          event.preventDefault();
+          target.closest('details:not([open])')?.setAttribute('open', '');
+          target.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
+          if (typeof target.focus === 'function') {
+            if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+            target.focus({preventScroll: true});
+          }
+          return;
+        }
         const control = event.target.closest('[data-pageflow-control]');
         if (control) {
           event.preventDefault();
           parent.postMessage({type: 'PAGEFLOW_CUSTOM_CONTROL', token: pageflowToken, id: control.getAttribute('data-pageflow-control')}, '*');
-          return;
-        }
-        const link = event.target.closest('a[href^="#"], [data-pageflow-target]');
-        if (!link) return;
-        const id = link.getAttribute('data-pageflow-target') || link.getAttribute('href')?.slice(1);
-        if (!/^[a-z][a-z0-9_-]{0,80}$/i.test(id || '')) return;
-        const target = document.getElementById(id);
-        if (!target) return;
-        event.preventDefault();
-        target.closest('details:not([open])')?.setAttribute('open', '');
-        target.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
-        if (typeof target.focus === 'function') {
-          if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
-          target.focus({preventScroll: true});
         }
       }, true);
       document.addEventListener('submit', (event) => event.preventDefault(), true);
@@ -1495,6 +1525,28 @@ function setOriginalPageVisible(visible) {
   }
 }
 
+async function openOriginalControl(controlId, targets, status) {
+  try {
+    const target = targets.get(controlId);
+    if (!target?.isConnected) throw new Error("This original control is no longer available. Refresh the page and try again.");
+    const isLink = target.matches("a[href]");
+    const url = new URL(isLink ? target.href : location.href, location.href);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+      throw new Error("This action requires the original website. Use the toolbar's Use original page button.");
+    }
+    const result = await chrome.runtime.sendMessage({
+      type: "PAGEFLOW_OPEN_ORIGINAL_TAB",
+      url: url.href,
+      focusId: isLink ? "" : String(target.id || "").slice(0, 200)
+    });
+    if (!result?.ok) throw new Error(result?.error || "Could not open the original website in a new tab.");
+    status.textContent = "Original website opened in a new tab. Your AI view is kept here.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+  status.title = status.textContent;
+}
+
 function showOriginalPage(rebuildHost, target = null) {
   setOriginalPageVisible(true);
   document.getElementById("pageflow-original-host")?.remove();
@@ -1539,6 +1591,7 @@ function renderCustomPageView(state, preview = false) {
   document.getElementById("pageflow-original-host")?.remove();
   document.getElementById("pageflow-rebuild-host")?.remove();
   const originalControls = collectPageControls();
+  const controlTargets = new Map(pageControlTargets);
   const host = document.createElement("div");
   host.id = "pageflow-rebuild-host";
   const shadow = host.attachShadow({ mode: "open" });
@@ -1548,6 +1601,7 @@ function renderCustomPageView(state, preview = false) {
   toolbar.className = "toolbar";
   const status = document.createElement("span");
   status.textContent = preview ? "AI Custom HTML preview — original page is unchanged" : "AI Custom HTML view";
+  status.setAttribute("role", "status");
   const actions = document.createElement("div");
   actions.className = "actions";
   const exit = document.createElement("button");
@@ -1588,7 +1642,8 @@ function renderCustomPageView(state, preview = false) {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = control.label;
-      button.addEventListener("click", () => showOriginalPage(host, pageControlTargets.get(control.id)));
+      button.title = "Open on the original website in a new tab";
+      button.addEventListener("click", () => openOriginalControl(control.id, controlTargets, status));
       controls.appendChild(button);
     });
     actions.appendChild(controls);
@@ -1613,6 +1668,7 @@ function renderCustomPageView(state, preview = false) {
         aiStateHistory.push(previous);
         if (aiStateHistory.length > 5) aiStateHistory.shift();
         pendingRebuildState = null;
+        setOriginalPageVisible(false);
         applyState(next);
       } catch {
         status.textContent = "Could not save this view.";
@@ -1654,8 +1710,7 @@ function renderCustomPageView(state, preview = false) {
   window.addEventListener("message", (event) => {
     if (!host.isConnected || event.source !== frame.contentWindow || event.data?.token !== page.token) return;
     if (event.data.type === "PAGEFLOW_CUSTOM_CONTROL") {
-      const target = pageControlTargets.get(event.data.id);
-      if (target?.isConnected) showOriginalPage(host, target);
+      openOriginalControl(event.data.id, controlTargets, status);
     } else if (event.data.type === "PAGEFLOW_CUSTOM_SCROLL" && progress) {
       progress.style.width = `${clamp(event.data.percent, 0, 100, 0)}%`;
     }
@@ -1677,6 +1732,7 @@ function renderRebuildView(state, preview = false) {
   const customResult = state.rebuildLayout === "custom" ? validateCustomDocumentState(state, data) : null;
   const isCustom = Boolean(customResult);
   const originalControls = collectPageControls();
+  const controlTargets = new Map(pageControlTargets);
   const translationMap = new Map(state.paragraphTranslations.map((item) => [item.paragraphId, item.text]));
   const host = document.createElement("div");
   host.id = "pageflow-rebuild-host";
@@ -1689,6 +1745,7 @@ function renderRebuildView(state, preview = false) {
   status.textContent = preview
     ? `${isCustom ? "AI Custom HTML" : "Rebuild"} preview — original page is unchanged`
     : isCustom ? "AI Custom HTML view" : "Rebuild view";
+  status.setAttribute("role", "status");
   const actions = document.createElement("div");
   const exit = document.createElement("button");
   exit.type = "button";
@@ -1729,6 +1786,7 @@ function renderRebuildView(state, preview = false) {
         aiStateHistory.push(previous);
         if (aiStateHistory.length > 5) aiStateHistory.shift();
         pendingRebuildState = null;
+        setOriginalPageVisible(false);
         applyState(next);
       } catch {
         status.textContent = "Could not save this view.";
@@ -1817,7 +1875,7 @@ function renderRebuildView(state, preview = false) {
       event.preventDefault();
       const controlId = trigger.getAttribute("data-pageflow-control");
       if (controlId) {
-        showOriginalPage(host, pageControlTargets.get(controlId));
+        openOriginalControl(controlId, controlTargets, status);
         return;
       }
       const targetId = trigger.getAttribute("data-pageflow-target");
@@ -1832,14 +1890,14 @@ function renderRebuildView(state, preview = false) {
     heading.textContent = "Original page controls";
     const explanation = document.createElement("p");
     explanation.textContent = originalControls.length > 24
-      ? "Showing the first 24 controls. Choose one to use it on the live page, or use the toolbar for all original features."
-      : "Choose a control to open it on the live page. Complete the action there, then return to this view.";
+      ? "Showing the first 24 controls. Open one in a new tab, or use the toolbar for all original features."
+      : "Original website actions open in a new tab. This view stays here; complete the action on the original website.";
     controlsPanel.append(heading, explanation);
     originalControls.slice(0, 24).forEach((control) => {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = `${control.label} · ${control.kind}`;
-      button.addEventListener("click", () => showOriginalPage(host, pageControlTargets.get(control.id)));
+      button.addEventListener("click", () => openOriginalControl(control.id, controlTargets, status));
       controlsPanel.appendChild(button);
     });
     article.appendChild(controlsPanel);
@@ -2241,9 +2299,22 @@ async function saveState(state) {
 }
 
 async function loadState() {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
+  const [stored, sourceTab] = await Promise.all([
+    chrome.storage.local.get(STORAGE_KEY),
+    chrome.runtime.sendMessage({ type: "PAGEFLOW_ORIGINAL_TAB_STATE" }).catch(() => null)
+  ]);
+  if (sourceTab?.ok && sourceTab.original) setOriginalPageVisible(true);
   const saved = stored[STORAGE_KEY]?.[siteKey()];
   applyState(saved ? { ...DEFAULT_STATE, ...saved } : DEFAULT_STATE);
+  if (sourceTab?.focusId) {
+    const focus = () => {
+      const target = document.getElementById(sourceTab.focusId);
+      target?.scrollIntoView({ block: "center", behavior: "auto" });
+      target?.focus?.({ preventScroll: true });
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", focus, { once: true });
+    else focus();
+  }
 }
 
 const initialization = loadState().catch(() => applyState(DEFAULT_STATE));
